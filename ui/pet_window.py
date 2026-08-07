@@ -1,0 +1,1376 @@
+# -*- coding: utf-8 -*-
+"""咕嘎企鹅桌宠主窗口 — 透明悬浮（企鹅精灵图动画 + 视觉 + 语音）"""
+import ctypes, os, sys, logging, random, math, threading
+
+logging.basicConfig(
+    filename=os.path.join(os.path.dirname(__file__), '..', 'pet_debug.log'),
+    level=logging.WARNING, format='%(asctime)s %(message)s'
+)
+
+from PyQt5.QtCore import Qt, QPoint, QTimer, QRect, QElapsedTimer, pyqtSignal
+from PyQt5.QtGui import (
+    QPixmap, QBitmap, QIcon, QPainter, QColor, QFont,
+    QFontMetrics, QPen, QPainterPath, QImage, QRadialGradient
+)
+from PyQt5.QtWidgets import (
+    QWidget, QMenu, QSystemTrayIcon, QApplication, QFrame, QPlainTextEdit, QHBoxLayout, QLabel
+)
+
+from ui.bongo_panel import BongoPanel
+from ui.sprite_animator import SpriteAnimator
+from ui.tts_engine import TTSEngine
+from ui.speech_system import get_speech, SPEECHES
+from core.ai_chat import AIChatEngine, ANALYSIS_OVERRIDE, WINRATE_OVERRIDE, OUTLOOK_OVERRIDE
+from core.keyboard_hook import KeyboardHook
+from core.status_system import StatusSystem
+from core.interaction import get_action, ACTIONS
+from core.config_manager import ConfigManager
+
+GWL_EXSTYLE = -20
+WS_EX_TOOLWINDOW = 0x00000080
+SWP_NOSIZE = 1; SWP_NOMOVE = 2; SWP_NOACTIVATE = 16; SWP_SHOWWINDOW = 64
+HWND_TOPMOST = -1; HWND_NOTOPMOST = -2
+
+
+def _proxy_opponents(tier: int):
+    """招募阶段对手不可见：从该酒馆等级【真实卡牌池】随机生成一个中期阵容，
+    让胜率模拟有参考值（BobsBuddy 思路：对平均对手算胜率）"""
+    from core.battle_sim import Minion
+    from core import card_db
+    import random as _rnd
+    pool = card_db.minions_at_tier(max(1, tier))
+    if not pool:
+        pool = ['BG25_008', 'BG28_309', 'BG26_174']
+    rng = _rnd.Random()
+    team = []
+    for i in range(7):
+        cid = rng.choice(pool)
+        db = card_db.lookup(cid)
+        if not db:
+            continue
+        atk, hp = db['atk'], db['hp']
+        # 中期阵容成长模拟：按酒馆等级给身材加成（参考该等级成型节奏）
+        grow = {1: 0, 2: 0, 3: 1, 4: 2, 5: 4, 6: 6}.get(max(1, tier), 0)
+        kw = {}
+        if db.get('deathrattle'):
+            kw['deathrattle'] = [db['deathrattle']]
+        # 嘲讽/圣盾关键词从卡牌描述推导（简化：按身材比例随机给）
+        r = rng.random()
+        if r < 0.25 and atk >= 4:
+            kw['taunt'] = True
+        elif r < 0.4 and atk >= 5:
+            kw['divine_shield'] = True
+        team.append(Minion(name=db['name'], atk=atk + grow, hp=hp + grow, **kw))
+    return team[:7]
+
+
+class PetWindow(QWidget):
+    RES_DIR = os.path.join(os.path.dirname(__file__), '..', 'resources')
+    # 视觉分析结果信号（后台线程 → 主线程，避免跨线程操作 Qt 界面）
+    _vision_done = pyqtSignal(str)
+
+    def __init__(self):
+        super().__init__(None, Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
+        self._config = ConfigManager()
+
+        # 窗口属性
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setAttribute(Qt.WA_NoSystemBackground)
+        self.setMouseTracking(True)
+
+        # --- 咕嘎企鹅精灵动画器（含翅膀抖/呼吸/摇摆）---
+        # 3D 可选：ai_config.json 的 "3d_penguin": true 才启用（实验性）；
+        # 默认 2D 精灵保证稳定显示。3D 出图失败自动回退 2D。
+        self._anim3d = None
+        self._anim2d = None
+        _gl_log = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'pet_3d.log')
+        try:
+            import json as _json
+            with open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                                   'ai_config.json'), 'r', encoding='utf-8') as _f:
+                _cfg3d = _json.load(_f)
+            _want_3d = bool(_cfg3d.get('3d_penguin', False))
+        except Exception:
+            _want_3d = False
+        if _want_3d:
+            try:
+                from ui.gl_penguin import GLPenguinRenderer
+                g3 = GLPenguinRenderer(display_width=250)
+                if g3.available:
+                    self._anim3d = g3
+                    print('[pet] 3D 企鹅渲染器已启用')
+                    with open(_gl_log, 'w', encoding='utf-8') as _f:
+                        _f.write('3D enabled\n')
+                else:
+                    print('[pet] 3D 渲染不可用，回退 2D:', g3.error)
+                    with open(_gl_log, 'w', encoding='utf-8') as _f:
+                        _f.write('3D unavailable: %s\n' % g3.error)
+            except Exception as e:
+                print('[pet] 3D 初始化异常，回退 2D:', e)
+                try:
+                    with open(_gl_log, 'w', encoding='utf-8') as _f:
+                        _f.write('3D exception: %s\n' % e)
+                except Exception:
+                    pass
+        else:
+            print('[pet] 3D 未启用（ai_config 3d_penguin=false），使用 2D')
+        self._anim2d = SpriteAnimator(self.RES_DIR, display_width=250)
+        self._anim = self._anim3d if self._anim3d is not None else self._anim2d
+        self._iw = self._anim.width
+        self._ih = self._anim.height
+        self._anim.on_update = self.update
+        self._anim.start()
+
+        # --- TTS 语音引擎 ---
+        self._tts = TTSEngine()
+        self._tts.speak_started.connect(self._on_tts_started)
+        self._tts.speak_finished.connect(self._on_tts_finished)
+
+        # --- 整体弹跳偏移 ---
+        self._anim_offset = QPoint(0, 0)
+        self._anim_start = QElapsedTimer()
+        self._anim_type = ""
+        self._anim_duration = 300
+        self._bounce_timer = QTimer(self)
+        self._bounce_timer.timeout.connect(self._bounce_tick)
+        self._bounce_timer.setInterval(16)
+
+        # --- 说话嘴巴控制 ---
+        self._talk_timer = QTimer(self)
+        self._talk_timer.setInterval(80)
+        self._talk_timer.timeout.connect(self._talk_tick)
+
+        # --- 气泡 ---
+        self._bubble_text = ""
+        self._bubble_timer = QTimer(self)
+        self._bubble_timer.setSingleShot(True)
+        self._bubble_timer.timeout.connect(self._hide_bubble)
+        self._chat_panel = None
+        self._chat_view = None
+        self._chat_history = []
+        self._input_mode = "chat"
+        self._tutor_pending_text = None   # 等待屏幕分析的问题
+        self._tutor_vision_done = False   # 屏幕分析是否完成
+        self._chat_title = None
+        self._chat_drag_pos = QPoint()
+
+        # --- 鼠标 ---
+        self._drag_pos = QPoint()
+        self._is_drag = False
+
+        # --- UI ---
+        self._init_sub_widgets()
+        self._init_tray()
+
+        # --- 核心 ---
+        self._status = StatusSystem(self)
+        self._status.mood_changed.connect(self._on_mood_changed)
+        self._status.start()
+
+        self._hook = KeyboardHook(self)
+        self._hook.key_pressed.connect(self._on_key)
+        self._hook.start()
+
+        # --- AI 大脑（DeepSeek，酒馆战棋大师 + 娇憨调皮人设）---
+        self._ai = AIChatEngine(self)
+        self._ai.reply_ready.connect(self._on_ai_reply)
+        self._ai.failed.connect(self._on_ai_fail)
+        self._vision_done.connect(self._on_vision_result)
+
+        # --- 打字/语音直接交流（无对话框）---
+        self._inline_input = None      # 迷你输入条（企鹅下方）
+        self._voice_mode = False       # 按住说话模式
+        self._asr = None
+        self._recording = False
+        # _vision_done 只连助教槽; 战棋看牌单独走 _see_board 回调, 避免互相覆盖
+
+        # --- 背景亮度自适应（深色桌面给黑猫加光晕，浅色桌面加深阴影）---
+        # 截屏放到独立线程执行，避免无桌面环境（远程/锁屏）下 ImageGrab 挂起 UI
+        self._bg_luminance = 0.5
+        self._bg_sampling = False
+        self._bg_fail_count = 0
+        self._bg_timer = QTimer(self)
+        self._bg_timer.setInterval(5000)
+        self._bg_timer.timeout.connect(self._sample_background)
+        self._bg_timer.start()
+
+        self._save_timer = QTimer(self)
+        # --- 自动观战：轮询日志，战斗开始自动给胜率+建议（及时性核心） ---
+        self._watch_timer = QTimer(self)
+        self._watch_timer.setInterval(4000)
+        self._watch_timer.timeout.connect(self._auto_watch)
+        self._watch_timer.start()
+        self._watch_phase = ''       # 上次观测到的阶段: ''/'recruit'/'combat'
+        self._watch_last_analyze = 0.0  # 上次自动分析时间戳
+        self._watch_analyzing = False
+        self._save_timer.setInterval(60000)
+        self._save_timer.timeout.connect(self._save_state)
+        self._save_timer.start()
+
+        # --- 启动 ---
+        self.setFixedSize(self._iw, self._ih)
+        screen = QApplication.primaryScreen()
+        if screen:
+            g = screen.geometry()
+            self.move(int(g.width() * 0.7), int(g.height() * 0.4))
+        self.show()
+        self.raise_()
+        self.activateWindow()
+        self._force_top()
+        self._click_count = 0
+
+        self._load_state()
+
+        QTimer.singleShot(200, self._force_top)
+        # 咕嘎企鹅启动问候
+        QTimer.singleShot(1500, lambda: self._say_with_expression(
+            "咕嘎～本鹅来了！冰面很滑，小心别摔了！", "happy", "bounce"))
+
+    # ==================== 子控件 ====================
+
+    def _init_sub_widgets(self):
+        self._bongo = BongoPanel(self)
+        self._bongo.hide()
+        self._bongo_on = False
+
+    def _init_tray(self):
+        self._tray = QSystemTrayIcon(self)
+        # 托盘图标：用 idle 表情缩放
+        icon_pm = QPixmap(32, 32)
+        icon_pm.fill(Qt.transparent)
+        ip = QPainter(icon_pm)
+        ip.setRenderHint(QPainter.Antialiasing)
+        idle_path = os.path.join(self.RES_DIR, 'expressions', 'normal_transparent.png')
+        if not os.path.exists(idle_path):
+            idle_path = os.path.join(self.RES_DIR, 'expressions', 'normal.png')
+        if os.path.exists(idle_path):
+            small = QPixmap(idle_path).scaled(
+                28, 28, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            ip.drawPixmap(2, 2, small)
+        ip.end()
+        self._tray.setIcon(QIcon(icon_pm))
+        self._tray.setToolTip("咕嘎企鹅桌宠")
+        m = QMenu()
+        m.addAction("显示/隐藏").triggered.connect(
+            lambda: self.hide() if self.isVisible() else (self.show(), self._force_top()))
+        m.addSeparator()
+        m.addAction("退出").triggered.connect(self._quit)
+        self._tray.setContextMenu(m)
+        self._tray.show()
+
+    # ==================== 绘制 ====================
+
+    def paintEvent(self, e):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing, True)
+
+        ox, oy = self._anim_offset.x(), self._anim_offset.y()
+
+        # 绘制企鹅（3D 渲染器 or 2D 精灵；不加环境光晕矩形，避免"透明方框"）
+        if self._anim3d is not None:
+            img = self._anim3d.paint_image()
+            if img is not None:
+                p.drawImage(ox, oy, img)
+            else:
+                # 3D 出图失败（GL 上下文丢失等）：立即回退 2D，企鹅不能消失
+                try:
+                    self._anim3d.stop()
+                except Exception:
+                    pass
+                self._anim3d = None
+                self._anim = self._anim2d
+                self._anim.on_update = self.update
+                self._anim.start()
+                self._anim.draw(p, ox, oy)
+        else:
+            self._anim.draw(p, ox, oy)
+
+        # 对话气泡
+        if self._bubble_text:
+            self._draw_bubble(p)
+
+    def _draw_ambient_glow(self, p):
+        """根据窗口背后桌面亮度画光晕：深色背景 → 白色柔光让黑猫显形"""
+        lum = self._bg_luminance
+        if lum >= 0.45:
+            return
+        a = int((0.45 - lum) * 300)  # 越暗越亮
+        a = min(a, 80)
+        grad = QRadialGradient(self._iw / 2, self._ih * 0.45, max(self._iw, self._ih) * 0.8)
+        grad.setColorAt(0, QColor(255, 255, 255, 0))
+        grad.setColorAt(0.5, QColor(255, 255, 255, a))
+        grad.setColorAt(1, QColor(255, 255, 255, 0))
+        p.setPen(Qt.NoPen)
+        p.setBrush(grad)
+        p.drawRect(0, 0, self._iw, self._ih)
+
+    def _sample_background(self):
+        """异步截取窗口背后桌面小块区域计算平均亮度（0~1），失败保持上次值。
+        防卡死: 连续失败后退避, 避免锁屏/远程会话下线程堆积。"""
+        if self._bg_sampling:
+            return
+        if 3 <= self._bg_fail_count < 12:
+            self._bg_fail_count += 1
+            return
+        self._bg_sampling = True
+        threading.Thread(target=self._grab_luminance, daemon=True).start()
+
+    def _grab_luminance(self):
+        try:
+            from PIL import ImageGrab
+            cx = self.x() + self._iw // 2
+            cy = self.y() + self._ih // 2
+            img = ImageGrab.grab(bbox=(cx - 60, cy - 60, cx + 60, cy + 60))
+            px = img.convert("L")
+            hist = px.histogram()
+            total = sum(hist)
+            if total:
+                self._bg_luminance = sum(i * c for i, c in enumerate(hist)) / (total * 255)
+            self._bg_fail_count = 0
+        except Exception:
+            self._bg_fail_count = min(self._bg_fail_count + 1, 12)
+        finally:
+            self._bg_sampling = False
+
+    def _draw_bubble(self, p):
+        font = QFont("Microsoft YaHei", 10)
+        fm = QFontMetrics(font)
+        max_w = min(self._iw - 16, 400)
+        line_h = fm.height() + 6
+        max_lines = 5
+
+        # 按宽度自动换行
+        lines = []
+        for para in self._bubble_text.split("\n"):
+            cur = ""
+            for ch in para:
+                if cur and fm.horizontalAdvance(cur + ch) > max_w:
+                    lines.append(cur)
+                    cur = ch
+                else:
+                    cur += ch
+            lines.append(cur)
+        lines = lines[:max_lines]
+        if len(lines) < 1:
+            lines = [""]
+
+        bw = max(min(max(fm.horizontalAdvance(l) for l in lines) + 24, max_w + 24), 60)
+        bh = len(lines) * line_h + 12
+        bx = (self._iw - bw) // 2
+        by = 5
+
+        # 气泡背景（浅灰 + 深色边框，深色背景时用高对比配色）
+        dark_bg = self._bg_luminance < 0.4
+        if dark_bg:
+            bg_color = QColor(30, 30, 40, 230)
+            text_color = QColor(240, 240, 245)
+            border_color = QColor(255, 255, 255, 60)
+        else:
+            bg_color = QColor(245, 245, 250, 240)
+            text_color = QColor(40, 40, 60)
+            border_color = QColor(60, 60, 80, 220)
+        path = QPainterPath()
+        path.addRoundedRect(bx, by, bw, bh, 12, 12)
+        p.fillPath(path, bg_color)
+        pen = QPen(border_color, 1.2)
+        p.setPen(pen)
+        p.setBrush(Qt.NoBrush)
+        p.drawRoundedRect(bx, by, bw, bh, 12, 12)
+
+        p.setPen(text_color)
+        p.setFont(font)
+        for i, line in enumerate(lines):
+            p.drawText(QRect(bx + 8, by + 4 + i * line_h, bw - 16, line_h),
+                       Qt.AlignLeft | Qt.AlignVCenter, line)
+
+    # ==================== 鼠标事件 ====================
+
+    def mousePressEvent(self, e):
+        if e.button() == Qt.LeftButton:
+            if self._voice_mode:
+                # 按住说话：按下开始录音
+                self._start_voice()
+                return
+            self._drag_pos = e.globalPos()
+            self._is_drag = False
+            self.grabMouse()
+
+    def mouseMoveEvent(self, e):
+        if e.buttons() & Qt.LeftButton:
+            delta = e.globalPos() - self._drag_pos
+            if delta.manhattanLength() > 3:
+                self._is_drag = True
+                self.move(self.pos() + delta)
+                self._drag_pos = e.globalPos()
+
+    def mouseReleaseEvent(self, e):
+        if e.button() == Qt.LeftButton:
+            if self._voice_mode:
+                # 松开发送
+                self._stop_voice()
+                return
+            self.releaseMouse()
+            if not self._is_drag:
+                self._click()
+            self._is_drag = False
+
+    def mouseDoubleClickEvent(self, e):
+        self._click()
+
+    def enterEvent(self, e):
+        self.setCursor(Qt.PointingHandCursor)
+
+    def leaveEvent(self, e):
+        self.setCursor(Qt.ArrowCursor)
+
+    # ==================== 右键 ====================
+
+    def contextMenuEvent(self, e):
+        menu = QMenu(self)
+        menu.setStyleSheet("""
+            QMenu { background: rgba(25,25,35,0.96); border: 1px solid rgba(255,255,255,0.08);
+                    border-radius: 10px; padding: 6px; color: white; font-size: 12px; }
+            QMenu::item { padding: 7px 18px; border-radius: 6px; margin: 1px; }
+            QMenu::item:hover { background: rgba(255,255,255,0.1); }
+            QMenu::separator { height: 1px; background: rgba(255,255,255,0.05); margin: 4px 10px; }
+        """)
+        for k, info in ACTIONS.items():
+            menu.addAction(f"{info.icon}  {info.label}").triggered.connect(
+                lambda _, x=k: self._act(x))
+        menu.addSeparator()
+        expr_menu = menu.addMenu("表情切换")
+        for name, label in [("normal","发呆"), ("happy","开心"), ("sleepy","困倦"),
+                             ("surprised","惊讶"), ("sad","委屈"), ("playful","傲娇")]:
+            expr_menu.addAction(label).triggered.connect(lambda _, n=name: self._anim.set_expression(n))
+        menu.addSeparator()
+        if self._anim.sticker_names:
+            sticker_menu = menu.addMenu("😜 表情包动作")
+            for name in self._anim.sticker_names:
+                sticker_menu.addAction(name).triggered.connect(
+                    lambda _, n=name: self._play_sticker_action(n))
+        voice_item = menu.addAction("🎤 按住说话（开启：按住企鹅说话，松开发送）")
+        voice_item.setCheckable(True)
+        voice_item.setChecked(self._voice_mode)
+        voice_item.triggered.connect(self._toggle_voice)
+        menu.addAction("⚡ 一键拔线（跳战斗动画，F1）").triggered.connect(self._netcut)
+        menu.addAction("💬 打字对话").triggered.connect(lambda: self._open_input('chat'))
+        menu.addAction("🎮 分析对局（看屏幕）").triggered.connect(self._see_board)
+        menu.addAction("🔮 阵容展望（招募阶段点企鹅也行）").triggered.connect(self._lineup_outlook)
+        menu.addAction("📋 最近战绩（记5场，来调侃）").triggered.connect(self._show_history)
+        menu.addSeparator()
+        talk_menu = menu.addMenu("跟我说话")
+        for scene, label in [("greeting","打招呼"), ("idle","闲聊"), ("tease","调皮"),
+                             ("hungry","说饿了"), ("bye","告别")]:
+            talk_menu.addAction(label).triggered.connect(lambda _, s=scene: self._say_scene(s))
+        menu.addSeparator()
+        menu.addAction("重置位置").triggered.connect(self._reset_pos)
+        menu.addSeparator()
+        menu.addAction("退出").triggered.connect(self._quit)
+        menu.exec_(e.globalPos())
+
+    # ==================== 交互 ====================
+
+    def _click(self):
+        self._click_count += 1
+        self._status.happy = min(100.0, self._status.happy + 3)
+        # 招募阶段点击企鹅 = 讨论 → 未来阵容展望（轨道⑤；日志检测到在招募阶段才触发）
+        try:
+            from core import log_reader
+            _b = log_reader.read_current_board()
+            if _b and _b.get('active') and _b.get('mine') and not _b.get('theirs'):
+                self._lineup_outlook()
+                return
+        except Exception:
+            pass
+        if self._ai.enabled:
+            # AI 互动：戳一下企鹅，它会用 DS 大脑回话（表情+调侃）
+            self._ai.ask("（饲养员用手指轻轻戳了戳你圆滚滚的肚子，想逗你玩。你被他戳醒了，吐槽他一句，再咕嘎一声。）")
+        else:
+            line = get_speech("click")
+            self._say_with_expression(line.text, line.expression, line.action)
+        QTimer.singleShot(3000, lambda: self._anim.update_mood(self._status.mood))
+
+    # ==================== 阵容展望（招募阶段讨论） ====================
+
+    def _lineup_outlook(self):
+        """招募阶段点击讨论 → 未来阵容展望：
+        规则引擎先给摘要（方向/缺的核心/成型模板/建议），再让 AI 军师展开"""
+        import time as _time
+        now = _time.time()
+        # 冷却：25 秒内不重复展望（点击很容易误触，防刷屏）
+        last = getattr(self, '_outlook_last_t', 0)
+        if now - last < 25:
+            self._say_with_expression(
+                "咕嘎～刚展望过啦，等 25 秒再点，让本鹅消化一下！", "tsundere", "tsundere")
+            return
+        from core import log_reader
+        board = log_reader.read_current_board()
+        if board is None:
+            self._say_with_expression("咕嘎？没找到炉石日志，先开一把酒馆战棋吧！", "sad", "shake")
+            return
+        if not board.get('active'):
+            self._say_with_expression(
+                "咕嘎？你根本没在玩嘛，开一把酒馆战棋，本鹅才能展望你的未来！", "tsundere", "tsundere")
+            return
+        if board.get('theirs'):
+            self._say_with_expression(
+                "咕嘎？正在战斗中呢，等回到招募阶段再点本鹅展望！", "tsundere", "peek")
+            return
+        if not board.get('mine'):
+            self._say_with_expression(
+                "咕嘎？场上还没有随从，先买点东西再来展望！", "tsundere", "tsundere")
+            return
+        self._say_with_expression("咕嘎～让本鹅琢磨琢磨你的未来…", "normal", "point")
+        from core.lineup_planner import project_lineup, format_outlook
+        from core.log_reader import format_board
+        try:
+            outlook = project_lineup(board)
+            outlook_text = format_outlook(outlook)
+        except Exception as e:
+            print(f"[阵容展望] 失败: {e}")
+            self._say_with_expression("咕嘎？展望引擎卡住了，再试一次！", "sad", "shake")
+            return
+        self._outlook_last_t = now
+        self._say_with_expression(f"咕嘎～本鹅展望完毕：{outlook_text}", "surprised", "point")
+        self._ai.ask(
+            f"饲养员在招募阶段点了你，想听对未来阵容的展望。当前局面（来自游戏日志，精确数据）：\n"
+            f"{format_board(board)}\n"
+            f"本鹅规则引擎的展望：{outlook_text}\n"
+            f"请以军师身份展望他的未来阵容：当前方向对不对、接下来优先买什么/刷什么、该不该升酒馆、"
+            f"第几回合成型、成型后强度如何、何时考虑转型。",
+            rag_query=f"阵容展望 {outlook.get('direction', '')} 未来阵容 成型 转型",
+            system_override=OUTLOOK_OVERRIDE)
+
+    # ==================== AI 对话 ====================
+
+    def _on_ai_reply(self, text, expression, action):
+        self._say_with_expression(text, expression, action)
+        # 助教模式: 对话追加到面板(确保面板已创建)
+        if self._tts._tutor_mode:
+            self._ensure_chat_panel()
+            if self._chat_history and self._chat_history[-1][0] == "系统":
+                self._chat_history.pop()
+            self._chat_append("咕嘎", text)
+            self._show_chat_panel()
+            # 连续对话: AI 回复后自动重新打开输入条, 让用户继续追问/答题
+            # 保留当前 _input_mode: tutor=提问模式(截屏), quiz_answer=答题模式(不截屏)
+            from PyQt5.QtCore import QTimer
+            _mode = self._input_mode if self._input_mode in ('tutor', 'quiz_answer') else 'tutor'
+            QTimer.singleShot(400, lambda: self._open_input(_mode))
+
+    def _on_ai_fail(self, error):
+        print(f"[AI] 请求失败({error})，回落台词库")
+        line = get_speech(random.choice(["click", "idle", "tease"]))
+        self._say_with_expression(line.text, line.expression, line.action)
+
+    # ==================== 打字输入条（无对话框） ====================
+
+    def _ensure_input(self):
+        """企鹅下方的迷你输入条（一次性创建）"""
+        if self._inline_input is None:
+            bar = QFrame(None, Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
+            bar.setStyleSheet("""
+                QFrame { background: rgba(25,25,35,0.95); border: 1px solid rgba(255,255,255,0.15);
+                         border-radius: 10px; }
+            """)
+            lay = QHBoxLayout(bar)
+            lay.setContentsMargins(8, 6, 8, 6)
+            self._input_edit = QPlainTextEdit()
+            self._input_edit.setFixedSize(320, 64)
+            self._input_edit.setPlaceholderText("和咕嘎说话…（Enter 发送，Esc 关闭）")
+            self._input_edit.setStyleSheet("background: transparent; color: #eee; border: none;")
+            lay.addWidget(self._input_edit)
+            self._input_hint = QLabel("💬")
+            self._input_hint.setStyleSheet("color: #8a8aaa; font-size: 11px;")
+            lay.addWidget(self._input_hint)
+            self._inline_input = bar
+
+            # Enter发送 / Ctrl+Enter换行 / Esc关闭 — 用 eventFilter 拦截,
+            # 因为 QPlainTextEdit 原生吞掉 Return 键导致 QShortcut 无效
+            self._input_edit.installEventFilter(self)
+            self._inline_input_bar = bar
+        return self._inline_input
+
+    def eventFilter(self, obj, event):
+        from PyQt5.QtCore import QEvent
+        # --- 输入条按键处理 ---
+        if obj is getattr(self, '_input_edit', None) and event.type() == QEvent.KeyPress:
+            from PyQt5.QtCore import Qt
+            k = event.key()
+            mods = event.modifiers()
+            if k in (Qt.Key_Return, Qt.Key_Enter) and not (mods & Qt.ControlModifier):
+                self._send_inline()
+                return True
+            if k in (Qt.Key_Return, Qt.Key_Enter) and (mods & Qt.ControlModifier):
+                self._input_edit.insertPlainText("\n")
+                return True
+            if k == Qt.Key_Escape:
+                self._hide_inline()
+                return True
+        # --- 面板 Esc 关闭 ---
+        if obj is getattr(self, '_chat_panel', None) and event.type() == QEvent.KeyPress:
+            from PyQt5.QtCore import Qt
+            if event.key() == Qt.Key_Escape:
+                self._hide_chat_panel()
+                return True
+        # --- 面板标题栏拖拽 ---
+        if obj is getattr(self, '_chat_title', None):
+            from PyQt5.QtCore import Qt
+            etype = event.type()
+            if etype == QEvent.MouseButtonPress and event.button() == Qt.LeftButton:
+                self._chat_drag_pos = event.globalPos() - self._chat_panel.frameGeometry().topLeft()
+                return True
+            if etype == QEvent.MouseMove and event.buttons() & Qt.LeftButton:
+                self._chat_panel.move(event.globalPos() - self._chat_drag_pos)
+                return True
+        return super().eventFilter(obj, event)
+
+    def _open_input(self, mode: str = 'chat'):
+        bar = self._ensure_input()
+        self._input_edit.setPlainText("")
+        self._input_mode = mode
+        if mode == 'tutor':
+            self._input_edit.setPlaceholderText("问本鹅 Python/大模型问题...(Enter 发送)")
+        elif mode == 'quiz_answer':
+            self._input_edit.setPlaceholderText("写出你的答案, 本鹅来点评...(Enter 发送)")
+        else:
+            self._input_edit.setPlaceholderText("和咕嘎说话...(Enter 发送, Esc 关闭)")
+        bar.move(self.x() + (self.width() - bar.width()) // 2, self.y() + self.height() + 4)
+        bar.show()
+        bar.raise_()
+        self._input_edit.setFocus()
+
+    def _send_inline(self):
+        text = self._input_edit.toPlainText().strip()
+        self._hide_inline()
+        if not text:
+            return
+        if self._input_mode == 'tutor':
+            self._tutor_ask(text)
+        elif self._input_mode == 'quiz_answer':
+            # 答题模式: 不截屏, 直接问AI(用助教人设点评答案)
+            from core.tutor import TUTOR_SYSTEM
+            self._ensure_chat_panel()
+            self._chat_append("饲养员", text)
+            self._chat_append("系统", "咕嘎点评中...~")
+            self._show_chat_panel()
+            self._ai.ask(text, system_override=TUTOR_SYSTEM)
+        else:
+            self._tts.set_tutor_mode(False)
+            self._ask_with_ctx(text)
+
+    # ==================== 助教大对话面板 ====================
+
+    def _ensure_chat_panel(self):
+        if self._chat_panel is not None:
+            return self._chat_panel
+        from PyQt5.QtWidgets import QFrame, QVBoxLayout, QTextEdit, QLabel, QShortcut
+        from PyQt5.QtGui import QKeySequence
+        from PyQt5.QtCore import Qt, QPoint
+        panel = QFrame(None, Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
+        panel.setStyleSheet("""
+            QFrame { background: rgba(25,25,40,0.97); border: 2px solid rgba(120,180,255,0.5);
+                     border-radius: 14px; }
+            QLabel { color: #8acaff; font-size: 12px; font-weight: bold; padding: 2px; }
+            QTextEdit { background: transparent; color: #eef; border: none;
+                        font-size: 13px; selection-background-color: #446; }
+        """)
+        lay = QVBoxLayout(panel)
+        lay.setContentsMargins(12, 8, 12, 10)
+        lay.setSpacing(4)
+        title = QLabel("📚 咕嘎助教对话  (Esc 关闭 · 拖动标题移动)")
+        title.setStyleSheet("color: #8acaff; font-size: 12px; font-weight: bold; padding: 2px;")
+        lay.addWidget(title)
+        view = QTextEdit()
+        view.setReadOnly(True)
+        view.setFixedSize(420, 260)
+        lay.addWidget(view)
+        self._chat_panel = panel
+        self._chat_view = view
+        self._chat_title = title
+        # 给标题栏安装事件过滤器实现拖拽
+        title.installEventFilter(self)
+        QShortcut(QKeySequence(Qt.Key_Escape), panel, self._hide_chat_panel)
+        return panel
+
+    def _show_chat_panel(self):
+        panel = self._ensure_chat_panel()
+        pw = panel.width()
+        ph = panel.height()
+        px = self.x() + (self.width() - pw) // 2
+        py = self.y() - ph - 8
+        if py < 4:
+            py = self.y() + self.height() + 8
+        panel.move(px, py)
+        panel.show()
+        panel.raise_()
+
+    def _hide_chat_panel(self):
+        if self._chat_panel is not None:
+            self._chat_panel.hide()
+
+    def _chat_append(self, who, text):
+        self._chat_history.append((who, text))
+        if self._chat_view is None:
+            return
+        # 超过30条时清空重建, 否则增量append避免卡顿
+        if len(self._chat_history) > 30:
+            self._chat_history = self._chat_history[-30:]
+            self._chat_view.clear()
+            for w, t in self._chat_history:
+                self._chat_append_line(w, t)
+        else:
+            self._chat_append_line(who, text)
+        bar = self._chat_view.verticalScrollBar()
+        bar.setValue(bar.maximum())
+
+    def _chat_append_line(self, who, text):
+        color = {"饲养员": "#8affaa", "咕嘎": "#cce0ff"}.get(who, "#888")
+        size = '11px' if who not in ("饲养员", "咕嘎") else '13px'
+        bold = f"<b>{who}:</b> " if who in ("饲养员", "咕嘎") else ""
+        html = f'<p style="color:{color}; font-size:{size}; margin:2px 0;">{bold}{self._esc_html(text)}</p>'
+        self._chat_view.append(html)
+
+    @staticmethod
+    def _esc_html(s):
+        return s.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;').replace('\n', '<br>')
+
+    def _tutor_ask(self, text):
+        """助教问答: 截屏分析 + 用户问题 → AI 回答
+        用 pyqtSignal 做跨线程回调(比 QTimer.singleShot 可靠),
+        加 8 秒超时保护: 屏幕分析超时则直接问 AI(不加屏幕内容)
+        """
+        from core.tutor import TUTOR_SYSTEM, SCREEN_TUTOR_PROMPT
+        from core import vision
+        from PyQt5.QtCore import QTimer
+        self._ensure_chat_panel()
+        self._chat_append("饲养员", text)
+        self._chat_append("系统", "咕嘎正在看屏幕并思考...(8秒超时)~")
+        self._show_chat_panel()
+        self._tutor_pending_text = text
+        self._tutor_vision_done = False
+        # 8秒超时: 如果屏幕分析还没回来, 直接问AI
+        QTimer.singleShot(8000, self._tutor_timeout)
+        # 后台截屏分析, 回调通过 pyqtSignal 回主线程
+        def _on_screen(screen_text):
+            # 在后台线程里, 用类级 pyqtSignal 安全地跨线程投递到主线程
+            self._vision_done.emit(screen_text)
+        vision.analyze_in_thread(None, _on_screen, SCREEN_TUTOR_PROMPT)
+
+    def _on_vision_result(self, screen_text):
+        """主线程: 收到屏幕分析结果"""
+        from core.tutor import TUTOR_SYSTEM
+        if self._tutor_vision_done:
+            return  # 超时已触发, 丢弃
+        self._tutor_vision_done = True
+        if self._chat_history and self._chat_history[-1][0] == "系统":
+            self._chat_history.pop()
+        combined = f"【屏幕看到】{screen_text}\n\n【饲养员的问题】{self._tutor_pending_text}"
+        self._chat_append("系统", "咕嘎思考中...")
+        self._ai.ask(combined, system_override=TUTOR_SYSTEM)
+
+    def _tutor_timeout(self):
+        """主线程: 屏幕分析超时, 直接问AI"""
+        from core.tutor import TUTOR_SYSTEM
+        if self._tutor_vision_done:
+            return
+        self._tutor_vision_done = True
+        if self._chat_history and self._chat_history[-1][0] == "系统":
+            self._chat_history.pop()
+        self._chat_append("系统", "(屏幕分析超时, 直接回答) 咕嘎思考中...")
+        self._ai.ask(self._tutor_pending_text, system_override=TUTOR_SYSTEM)
+
+    def _ask_with_ctx(self, text):
+        """问 AI 时若命中战绩关键词，注入最近战绩摘要（让咕嘎用战绩调侃你）"""
+        ctx = ''
+        try:
+            from core import match_history
+            ctx = match_history.chat_context(text)
+        except Exception:
+            pass
+        if ctx:
+            self._ai.ask(
+                f"{ctx}\n饲养员说：{text}\n如果他在问战绩相关，结合上面的最近战绩"
+                f"调侃他（可爱不刻薄，自称本鹅）。", rag_query=text)
+        else:
+            self._ai.ask(text, rag_query=text)
+
+    def _hide_inline(self):
+        if self._inline_input is not None:
+            self._inline_input.hide()
+
+    # ==================== 按住说话（无对话框） ====================
+
+    def _play_sticker_action(self, name):
+        """播放 GIF 表情包动作"""
+        self._anim.play_sticker(name)
+        self._say_with_expression(f"咕嘎～{name}！", "happy", "none")
+
+    def _toggle_voice(self, checked):
+        self._voice_mode = bool(checked)
+        if self._voice_mode:
+            self._say_with_expression("咕嘎～按住本鹅说话，松开发送！", "normal", "none")
+        else:
+            self._stop_voice()
+            self._say_with_expression("咕嘎～语音模式关了。", "normal", "none")
+
+    def _start_voice(self):
+        if self._recording:
+            return
+        from core.asr import ASRRecorder
+        if self._asr is None:
+            self._asr = ASRRecorder()
+        if not self._asr.available:
+            self._say_with_expression("咕嘎？语音模块没就绪，用打字吧。", "sad", "none")
+            return
+        self._recording = True
+        self._asr.start()
+        self._bubble_text = "🔴 录音中…松开发送"
+        self._bubble_timer.start(60000)
+        self.update()
+
+    def _stop_voice(self):
+        if not self._recording:
+            return
+        self._recording = False
+        self._bubble_timer.stop()
+        text = self._asr.stop() if self._asr else ''
+        if self._asr and self._asr.error:
+            self._say_with_expression(f"咕嘎？{self._asr.error}", "sad", "shake")
+            return
+        if not text:
+            st = self._asr.stats() if self._asr else {}
+            if not st.get('has_audio'):
+                # 麦克风没收到声音：多半是设备/音量问题
+                dev = getattr(self._asr, 'device', None)
+                self._say_with_expression(
+                    "咕嘎？没收到声音，检查一下麦克风吧（录音"
+                    f"{st.get('seconds', 0)}秒，设备{'#' + str(dev) if dev is not None else '默认'}）",
+                    "sad", "shake")
+            else:
+                self._say_with_expression("咕嘎？没听清，再说一次？", "surprised", "peek")
+            return
+        self._ask_with_ctx(text)
+
+    def _say(self, text: str, expression: str = None, action: str = "none"):
+        self._say_with_expression(text, expression, action)
+
+    # 动作 → 表情 强制映射（保证动作与表情永远匹配）
+    GESTURE_EXPR = {
+        'point': 'playful',      # 指点江山 → 傲娇脸（装严肃指点）
+        'peek': 'normal',        # 偷偷看我 → 日常脸
+        'tsundere': 'playful',   # 傲娇摇头 → 傲娇脸
+        'bounce': 'happy',       # 开心蹦 → 开心
+        'shake': 'surprised',    # 受惊抖 → 惊讶
+    }
+
+    def _say_with_expression(self, text: str, expression: str = None, action: str = "none"):
+        # 显示气泡
+        self._bubble_text = text
+        self._bubble_timer.start(4000)
+        self.update()
+
+        # 动作决定表情（强制匹配）
+        if action in self.GESTURE_EXPR:
+            expression = self.GESTURE_EXPR[action]
+
+        # 切换表情
+        if expression and expression != "none":
+            self._anim.set_expression(expression)
+
+        # 触发动作（bounce/shake/point/peek/tsundere 由动画器处理）
+        if action and action != "none":
+            self._anim.trigger_action(action)
+
+        # 播放 TTS 语音
+        self._tts.speak(text)
+
+    def _on_tts_started(self, text: str):
+        self._talk_timer.start()
+        self._talk_count = 0
+
+    def _on_tts_finished(self):
+        self._talk_timer.stop()
+        self._anim.mouth_open = 0.0
+        self.update()
+
+    def _talk_tick(self):
+        self._talk_count = getattr(self, '_talk_count', 0) + 1
+        if self._tts.is_speaking:
+            if self._talk_count % 3 < 2:
+                self._anim.mouth_open = random.uniform(0.2, 0.6)
+            else:
+                self._anim.mouth_open = 0.1
+        else:
+            self._anim.mouth_open = 0.0
+            self._talk_timer.stop()
+
+    def _hide_bubble(self):
+        self._bubble_text = ""
+        self.update()
+
+    def _say_scene(self, scene: str):
+        line = get_speech(scene)
+        self._say_with_expression(line.text, line.expression, line.action)
+
+    def _on_mood_changed(self, mood: str):
+        self._tray.setToolTip(f"咕嘎企鹅桌宠 {mood}")
+        self._anim.update_mood(mood)
+
+    def _on_key(self, vk):
+        # KeyboardHook.key_pressed 是 pyqtSignal, 跨线程自动 QueuedConnection
+        # 所以 _on_key 已经在主线程, 可直接操作 UI
+        self._bongo.press_key(vk)
+        if not self._bongo_on:
+            self._show_bongo()
+        # 数字键: 1=请教助教 2=助教出题 3=语音 4=拔线 5=摇摆
+        shortcuts = {0x31: 'ask_tutor', 0x32: 'quiz_user', 0x33: 'voice_chat',
+                     0x34: 'netcut', 0x35: 'dance'}
+        if vk in shortcuts:
+            self._act(shortcuts[vk])
+        if vk == 0x70:  # F1 → 一键拔线(冗余)
+            self._netcut()
+
+    def _show_bongo(self):
+        self._bongo_on = True
+        self._bongo.move(max(0, (self._iw - self._bongo.width()) // 2),
+                         self._ih)
+        self._bongo.show()
+        w = max(self._iw, self._bongo.width())
+        self.setFixedSize(w, self._ih + self._bongo.height())
+
+    def _act(self, name):
+        a = get_action(name)
+
+        # 看我的棋盘 → 视觉流程
+        if name == 'see_board':
+            self._see_board()
+            return
+
+        # Python/大模型助教 → 请教
+        if name == 'ask_tutor':
+            self._say_with_expression("咕嘎~想问什么? 本鹅耐心讲解~", "happy", "peek")
+            self._tts.set_tutor_mode(True)
+            self._ensure_chat_panel()
+            self._show_chat_panel()
+            self._open_input('tutor')
+            return
+
+        # Python/大模型助教 → 出题
+        if name == 'quiz_user':
+            self._tts.set_tutor_mode(True)
+            self._input_mode = 'quiz_answer'  # 标记: 接下来用户输入是答题(不截屏)
+            self._ensure_chat_panel()
+            self._chat_append("咕嘎", "本鹅出题中...~")
+            self._show_chat_panel()
+            from core.tutor import TUTOR_QUIZ
+            self._say_with_expression("咕嘎~本鹅出题考考你!", "playful", "point")
+            self._ai.ask("请出一道 Python/大模型中级工程师思考题, 然后等饲养员回答.",
+                         system_override=TUTOR_QUIZ)
+            return
+
+        # 一键拔线
+        if name == 'netcut':
+            self._netcut()
+            return
+
+        # 语音对话
+        if name == 'voice_chat':
+            self._toggle_voice(not getattr(self, '_voice_mode', False))
+            return
+
+        # 指点江山 → 军师模式（先出动作，再让 AI 给建议）
+        if name == 'advise':
+            self._say_with_expression(a.messages[0], a.animation, a.gesture)
+            self._ai.ask("饲养员请你指点他一下酒馆战棋。用指点江山的姿态，给他一条当前版本最实用的建议（结合第14赛季机制）。",
+                         rag_query="酒馆战棋 指点 建议 第14赛季")
+            self._status.happy = min(100.0, self._status.happy + a.happy_delta)
+            return
+
+        scene_map = {
+            'feed': 'feed', 'play': 'play', 'pet': 'pet',
+            'sleep': 'sleep', 'dance': 'play', 'peek': 'idle', 'tsundere': 'tease',
+        }
+        scene = scene_map.get(name, 'idle')
+        line = get_speech(scene)
+        # 用动作定义的 gesture 播放动画
+        gesture = a.gesture if a.gesture != 'none' else line.action
+        self._say_with_expression(line.text, a.animation, gesture)
+
+        QTimer.singleShot(4000, lambda: self._anim.update_mood(self._status.mood))
+
+        self._status.hunger = max(0, min(100, self._status.hunger + a.hunger_delta))
+        self._status.happy = max(0, min(100, self._status.happy + a.happy_delta))
+        self._status.energy = max(0, min(100, self._status.energy + a.energy_delta))
+        self._status.sleeping = (name == 'sleep') and (not self._status.sleeping)
+
+    # ==================== 一键拔线 ====================
+
+    def _netcut(self):
+        """强制断开炉石对局连接（跳战斗动画的时间技巧），需管理员权限"""
+        import time as _time
+        now = _time.time()
+        # 重连保护期：拔线后 30 秒内不执行，避免打断重连（不稳定主因）
+        reconnecting = getattr(self, '_netcut_reconnect_until', 0)
+        if now < reconnecting:
+            self._say_with_expression(
+                "咕嘎～正在重连中，别急着拔！等本鹅说重连成功再拔～",
+                "surprised", "peek")
+            return
+        # 冷却：15 秒内只允许拔一次
+        last = getattr(self, '_last_netcut_t', 0)
+        if now - last < 15:
+            self._say_with_expression(
+                "咕嘎～刚拔过线，等 15 秒再拔！拔太频繁会被服务器判负的！",
+                "sad", "shake")
+            return
+        # 每局拔线次数上限（服务器拒绝重连的硬限制）
+        n_cut = getattr(self, '_netcut_count', 0)
+        if n_cut >= 9:
+            self._say_with_expression(
+                "咕嘎～这局已经拔了 9 次了！再拔会被服务器判负，稳一点！",
+                "sad", "shake")
+            return
+        # 时机检测：只在战斗中拔（对手可见 = 战斗已开始，结果已定）
+        from core import log_reader
+        board = log_reader.read_current_board()
+        if board and board.get('active') and board.get('theirs'):
+            pass  # 战斗中，OK
+        elif board and board.get('active') and not board.get('theirs'):
+            self._say_with_expression(
+                "咕嘎～现在还在招募阶段，对手没开打，拔了也没用！等战斗开始再按！",
+                "tsundere", "tsundere")
+            return
+        else:
+            self._say_with_expression(
+                "咕嘎？没检测到对局，开一把酒馆战棋再拔线！", "sad", "shake")
+            return
+        from core.netcut import force_disconnect_hearthstone
+        n, msg = force_disconnect_hearthstone()
+        if msg and n == 0:
+            self._say_with_expression(f"咕嘎？{msg}", "sad", "shake")
+        elif n > 0:
+            self._last_netcut_t = now
+            self._netcut_count = n_cut + 1
+            self._netcut_reconnect_until = now + 30  # 重连保护期
+            src = f"（按{msg}定位）" if msg else ""
+            self._say_with_expression(
+                f"咕嘎～已断开 {n} 条对局连接{src}（本局第 {n_cut + 1} 次）！正在重连，别乱点～",
+                "playful", "bounce")
+            self._watch_reconnect(0)
+        else:
+            self._say_with_expression(f"咕嘎？{msg}", "sad", "shake")
+
+    def _watch_reconnect(self, attempt: int):
+        """拔线后轮询日志：确认重连成功（每 3 秒，最多 5 次）"""
+        import os as _os
+        from core import log_reader
+        try:
+            b = log_reader.read_current_board()
+            # 重连成功信号：日志有活动 且 回到招募阶段（对手不可见）
+            if b and b.get('active') and not b.get('theirs'):
+                self._netcut_reconnect_until = 0
+                self._say_with_expression(
+                    "咕嘎～重连成功，跳过动画直接进招募！本局还能再拔"
+                    f"{9 - getattr(self, '_netcut_count', 0)} 次～",
+                    "happy", "bounce")
+                return
+            if b and b.get('active') and b.get('theirs'):
+                # 还在战斗中：可能刚重连还在原战斗里，再等等
+                if attempt < 5:
+                    QTimer.singleShot(3000, lambda: self._watch_reconnect(attempt + 1))
+                return
+        except Exception:
+            pass
+        if attempt < 5:
+            QTimer.singleShot(3000, lambda: self._watch_reconnect(attempt + 1))
+        else:
+            self._say_with_expression(
+                "咕嘎？重连有点慢…如果 10 秒后还没回招募，可能是本局拔太多被限制了。",
+                "surprised", "peek")
+
+    # ==================== 自动观战（战斗开始自动分析） ====================
+
+    def _auto_watch(self):
+        """每 4 秒轮询日志：检测 招募→战斗 转换，自动给胜率+军师建议"""
+        import time as _time
+        # 正在人工分析或 AI 忙时跳过
+        if self._watch_analyzing:
+            return
+        if self._ai.is_busy():
+            return
+        try:
+            from core import log_reader
+            board = log_reader.read_current_board()
+            if board is None:
+                return
+            # 对局结束 → 记录战绩（只记结果，最近5场）+ 调侃播报（仅状态转换时一次）
+            if board.get('reason') == 'game_over':
+                if self._watch_phase != 'gameover':
+                    self._watch_phase = 'gameover'
+                    self._on_game_over(board)
+                return
+            if not board.get('active'):
+                self._watch_phase = ''
+                return
+            in_combat = bool(board.get('theirs'))
+            phase = 'combat' if in_combat else 'recruit'
+            # 新对局：重置每局拔线计数
+            if self._watch_phase and self._watch_phase == 'recruit' and phase == 'recruit':
+                pass  # 同一招募阶段内不重置
+            elif phase == 'recruit' and self._watch_phase != '':
+                # 从战斗/空回到招募 = 可能新对局或拔线重连回来；
+                # 用"离上次战斗结束较久"判断新对局，简单起见：回到招募时若
+                # 拔线计数>0 且超过 120 秒没有战斗，视为新对局重置
+                import time as _t2
+                if _t2.time() - getattr(self, '_last_combat_t', 0) > 120:
+                    self._netcut_count = 0
+            if phase == 'combat':
+                self._last_combat_t = _time.time()
+            # 自动分析已关闭: 用户需手动点击右键菜单"分析对局（看屏幕）"触发
+            # 这里只跟踪阶段状态, 用于拔线计数重置等被动逻辑
+            self._watch_phase = phase
+        except Exception:
+            pass
+
+    # ==================== 战绩记忆（最近5场，只记结果） ====================
+
+    def _on_game_over(self, board):
+        """对局结束（自动观战检测到）：记录战绩 → 按最近战绩调侃播报"""
+        from core import match_history
+        ps = board.get('playstate', '')
+        result = 'win' if ps == 'WON' else ('concede' if ps == 'CONCEDED' else 'loss')
+        h = match_history.record_result(result=result, place=board.get('place'),
+                                        turns=board.get('turn'))
+        s = match_history.stats(h)
+        roast = match_history.build_roast(h) or "咕嘎～这局打完了！"
+        expr = 'happy' if result == 'win' else 'sad'
+        action = 'bounce' if result == 'win' else 'shake'
+        self._say_with_expression(roast, expr, action)
+        print(f"[战绩] 记录:{result} 名次:{board.get('place')} 最近{s['total']}场:"
+              f"{match_history.format_line(h)}")
+
+    def _show_history(self):
+        """右键「最近战绩」：播报最近5场 + 调侃"""
+        from core import match_history
+        h = match_history.recent()
+        if not h:
+            self._say_with_expression(
+                "咕嘎？还没记录过战绩，先去打完一把酒馆战棋！", "tsundere", "tsundere")
+            return
+        s = match_history.stats(h)
+        roast = match_history.build_roast(h) or ''
+        avg = f"，平均第{s['avg_place']}名" if s.get('avg_place') else ''
+        self._say_with_expression(
+            f"咕嘎～最近{len(h)}场战绩：{match_history.format_line(h)}"
+            f"（吃鸡{s['wins']}次{avg}）！{roast}", "playful", "point")
+
+    # ==================== 看棋盘（日志优先，视觉兜底） ====================
+
+    def _see_board(self):
+        """① power.log 日志解析（零API零429，最精确）② 失败才走 GLM 视觉"""
+        from core import log_reader
+        board = log_reader.read_current_board()
+        if board is None:
+            self._say_with_expression("咕嘎？没找到炉石日志，先开一把酒馆战棋吧！", "sad", "shake")
+            return
+        if not board.get('active'):
+            # 日志太久没更新 = 没在玩
+            self._say_with_expression(
+                f"咕嘎？日志 {board.get('stale_min', '?')} 分钟没动了，你根本没在玩嘛！"
+                f"开一把酒馆战棋，本鹅就能看牌面啦～", "tsundere", "tsundere")
+            return
+        if board.get('mine'):
+            self._on_board_from_log(board)
+            return
+        self._say_with_expression("咕嘎～日志没读到，让本鹅看看你的屏幕…", "surprised", "point")
+        from core import vision
+        from PyQt5.QtCore import QTimer
+        def _cb_board(text):
+            QTimer.singleShot(0, lambda: self._on_board_seen(text))
+        vision.analyze_in_thread(None, _cb_board)
+
+    def _on_board_from_log(self, board):
+        """日志局面 → 胜率模拟+解读 → 对手阵容分析 → DS 军师分析（不调用任何视觉API）
+        战斗阶段：实时胜率解读（谁先倒/最大威胁/胜负手）+ 对手流派分析
+        招募阶段：假想对手参考胜率 + 己方阵容方向展望"""
+        from core.log_reader import format_board
+        from core.battle_sim import win_rate, format_rate, minion_from_log, analyze_matchup, format_matchup_insight
+        board_text = format_board(board)
+        self._say_with_expression("咕嘎～日志读到牌面了！", "normal", "point")
+        rate_text = ''
+        insight = ''
+        opp_text = ''
+        outlook = ''
+        mine = [minion_from_log(m) for m in board['mine']]
+        theirs = [minion_from_log(m) for m in board['theirs']]
+        if mine and theirs:
+            # 战斗中：对手可见 → 真实胜率 + 结构化解读（谁先倒/最大威胁/胜负手）
+            r = win_rate(mine, theirs, n=600)
+            rate_text = format_rate(r)
+            try:
+                m = analyze_matchup(mine, theirs, n=600)
+                insight = format_matchup_insight(m)
+            except Exception as e:
+                print(f"[胜率解读] 失败: {e}")
+            # 对手阵容分析（流派/核心/威胁/弱点）
+            try:
+                from core.comp_analysis import summarize_opponent
+                opp_text = summarize_opponent(theirs)
+            except Exception as e:
+                print(f"[对手分析] 失败: {e}")
+            speak = f"咕嘎～模拟了 2000 场：{rate_text}"
+            if insight:
+                speak += f" {insight}"
+            self._say_with_expression(speak, "surprised", "point")
+        elif mine:
+            # 招募阶段：对手不可见 → 用"当前酒馆等级真实卡池常见阵容"做假想对手
+            r = win_rate(mine, _proxy_opponents(board.get('tier', 4)), n=600)
+            rate_text = format_rate(r)
+            # 招募阶段顺带展望己方阵容方向（喂给军师作上下文）
+            try:
+                from core.lineup_planner import project_lineup, format_outlook
+                outlook = format_outlook(project_lineup(board))
+            except Exception as e:
+                print(f"[阵容展望] 失败: {e}")
+            self._say_with_expression(
+                f"咕嘎～还没开打看不到对手，本鹅拿{board.get('tier', 4)}级真实卡池"
+                f"算了算：{rate_text}（参考）", "surprised", "point")
+        prompt_tail = "请以军师身份分析：当前局面核心矛盾、最优先的1-3个动作（买/刷/升/转/站位）、下一步关键节奏。"
+        self._ai.ask(
+            f"饲养员让你分析他的酒馆战棋对局（来自游戏日志，精确数据）：\n{board_text}\n"
+            + (f"本鹅的战斗模拟器预测：{rate_text}\n" if rate_text else "")
+            + (f"本鹅的模拟解读：{insight}\n" if insight else "")
+            + (f"对手阵容分析：{opp_text}\n" if opp_text else "")
+            + (f"本鹅的阵容展望：{outlook}\n" if outlook else "")
+            + prompt_tail,
+            rag_query=board_text,
+            system_override=WINRATE_OVERRIDE if (insight or opp_text) else ANALYSIS_OVERRIDE)
+
+    def _on_board_seen(self, vision_text):
+        if not vision_text or vision_text.startswith('❌'):
+            self._say_with_expression(f"咕嘎？{vision_text or '什么都没看到'}",
+                                      "sad", "shake")
+            return
+        # 中间反馈：让用户知道在分析中
+        self._say_with_expression("咕嘎看到牌面了，本鹅正在分析…", "normal", "point")
+        # 胜率预测：从视觉结果提取随从 JSON → 蒙特卡洛模拟 + 结构化解读
+        rate_text = ''
+        insight = ''
+        opp_text = ''
+        try:
+            import json as _json
+            import re
+            from core.battle_sim import Minion, win_rate, format_rate, analyze_matchup, format_matchup_insight
+            m = re.search(r'```json\s*(\{.*?\})\s*```', vision_text, re.S)
+            if m:
+                data = _json.loads(m.group(1))
+                mine = [Minion(**x) for x in data.get('minions', []) if x.get('atk')]
+                theirs = [Minion(**x) for x in data.get('opponents', []) if x.get('atk')]
+                if mine and theirs:
+                    r = win_rate(mine, theirs, n=600)
+                    rate_text = format_rate(r)
+                    try:
+                        mm = analyze_matchup(mine, theirs, n=600)
+                        insight = format_matchup_insight(mm)
+                    except Exception as e:
+                        print(f"[胜率解读] 失败: {e}")
+                    try:
+                        from core.comp_analysis import summarize_opponent
+                        opp_text = summarize_opponent(theirs)
+                    except Exception as e:
+                        print(f"[对手分析] 失败: {e}")
+                    speak = f"咕嘎～模拟了 2000 场：{rate_text}"
+                    if insight:
+                        speak += f" {insight}"
+                    self._say_with_expression(speak, "surprised", "point")
+        except Exception as e:
+            print(f"[胜率模拟] 失败: {e}")
+        self._ai.ask(
+            f"饲养员让你看他的酒馆战棋棋盘，你截屏看到的局面：\n{vision_text}\n"
+            + (f"本鹅的战斗模拟器预测：{rate_text}\n" if rate_text else "")
+            + (f"本鹅的模拟解读：{insight}\n" if insight else "")
+            + (f"对手阵容分析：{opp_text}\n" if opp_text else "")
+            + f"请以军师身份分析：当前局面核心矛盾、最优先的1-3个动作（买/刷/升/转/站位）、下一步关键节奏。",
+            rag_query=vision_text,
+            system_override=WINRATE_OVERRIDE if (insight or opp_text) else ANALYSIS_OVERRIDE)
+
+    # ==================== 整体弹跳 ====================
+
+    def _play_anim(self, atype):
+        self._anim_type = atype
+        self._anim_start.start()
+        if not self._bounce_timer.isActive():
+            self._bounce_timer.start()
+
+    def _bounce_tick(self):
+        elapsed = self._anim_start.elapsed()
+        if elapsed > self._anim_duration:
+            self._anim_offset = QPoint(0, 0)
+            self._bounce_timer.stop()
+            self._anim_type = ""
+            self.update()
+            return
+        t = elapsed / self._anim_duration
+        if self._anim_type == "bounce":
+            progress = math.sin(t * math.pi)
+            y = -5 * progress
+            self._anim_offset = QPoint(0, int(y))
+        elif self._anim_type == "shake":
+            amp = 4 * (1 - t)
+            x = amp * math.sin(t * math.pi * 4)
+            self._anim_offset = QPoint(int(x), 0)
+        self.update()
+
+    # ==================== 工具 ====================
+
+    def _force_top(self):
+        try:
+            hwnd = int(self.winId())
+            ctypes.windll.user32.SetWindowPos(
+                hwnd, HWND_TOPMOST, 0, 0, 0, 0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE)
+            style = ctypes.windll.user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
+            ctypes.windll.user32.SetWindowLongW(
+                hwnd, GWL_EXSTYLE, style | 0x00000080)
+        except Exception as e:
+            pass
+
+    def _reset_pos(self):
+        scr = QApplication.primaryScreen()
+        if scr:
+            g = scr.geometry()
+            self.move((g.width() - self.width()) // 2,
+                     (g.height() - self.height()) // 2)
+        self._say("咕嘎～回到原位了。")
+
+    def _load_state(self):
+        self._status.set_all(**self._config.load_status())
+
+    def _save_state(self):
+        self._config.save_pos(self.x(), self.y())
+        s = self._status.snapshot()
+        self._config.save_status(s["hunger"], s["happy"], s["energy"])
+
+    def _quit(self):
+        self._save_state()
+        for _t in (self._bg_timer, self._watch_timer, self._save_timer,
+                   self._bounce_timer, self._talk_timer, self._bubble_timer):
+            try:
+                _t.stop()
+            except Exception:
+                pass
+        try:
+            self._tts.stop()
+            self._anim.stop()
+            self._hook.stop()
+            self._status.stop()
+        except Exception:
+            pass
+        self._tray.hide()
+        QApplication.quit()
+
+    def closeEvent(self, e):
+        self._save_state()
+        self.hide()
+        e.ignore()

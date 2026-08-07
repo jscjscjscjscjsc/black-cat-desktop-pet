@@ -1,0 +1,46 @@
+﻿# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+
+# 虚拟环境
+.venv/
+venv/
+env/
+
+# 敏感配置（含 API Key，切勿提交）
+ai_config.json
+
+# 日志
+*.log
+pet_debug.log
+pet_3d.log
+startup.log
+pythonw_test.log
+
+# 临时/备份文件
+*.bak
+*.bak_*
+*.broken
+*.final.bak
+*.tutor.bak
+_diag_*.py
+_fix_*.py
+apply_patches_here.py
+check_methods.py
+fix_syntax.py
+test_write.txt
+_tts_test/
+
+# 截图/临时产物
+pet_shot.png
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# 操作系统
+Thumbs.db
+.DS_Store

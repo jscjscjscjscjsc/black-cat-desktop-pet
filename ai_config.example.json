@@ -1,0 +1,13 @@
+{
+  "api_key": "你的 DeepSeek API Key",
+  "base_url": "https://api.deepseek.com",
+  "model": "deepseek-v4-flash",
+  "temperature": 0.85,
+  "max_tokens": 1200,
+  "max_history": 8,
+  "request_timeout": 60,
+  "zhipu_api_key": "你的智谱 API Key（视觉模型用）",
+  "vision_model": "glm-4.6v-flash",
+  "run_as_admin": false,
+  "3d_penguin": false
+}
