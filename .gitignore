@@ -44,3 +44,6 @@ pet_shot.png
 # 操作系统
 Thumbs.db
 .DS_Store
+
+# Atomic local credential writes
+ai_config.json.tmp

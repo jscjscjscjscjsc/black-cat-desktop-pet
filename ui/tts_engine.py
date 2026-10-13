@@ -63,7 +63,7 @@ class TTSEngine(QObject):
     def _current_rate(self):
         return self.EDGE_RATE_TUTOR if self._tutor_mode else self.EDGE_RATE
 
-    DOUBAO_API_KEY = "9ec1142f-96a4-45a5-93b0-6b2031d18589"
+    DOUBAO_API_KEY = ""
     DOUBAO_VOICE = "zh_female_mizai_saturn_bigtts"
     DOUBAO_SPEED = -15
     DOUBAO_RESOURCE = "seed-tts-2.0"
@@ -84,6 +84,12 @@ class TTSEngine(QObject):
         self._speak_token = 0   # 每次 speak 自增, 用于失效旧请求
         self._current_token = 0  # 当前正在播放的 token
 
+        try:
+            cfg_path = os.path.join(os.path.dirname(__file__), '..', 'ai_config.json')
+            with open(cfg_path, encoding='utf-8-sig') as f:
+                self.DOUBAO_API_KEY = json.load(f).get('doubao_tts_api_key', '')
+        except Exception:
+            self.DOUBAO_API_KEY = ''
         self._use_doubao = bool(self.DOUBAO_API_KEY)
         self._use_edge = self._check_edge_tts()
 

@@ -9,5 +9,20 @@
   "zhipu_api_key": "你的智谱 API Key（视觉模型用）",
   "vision_model": "glm-4.6v-flash",
   "run_as_admin": false,
-  "3d_penguin": false
+  "3d_penguin": false,
+  "realtime_voice": {
+    "model": "qwen-audio-3.1-realtime-plus",
+    "region": "cn-beijing",
+    "workspace_id": "YOUR_WORKSPACE_ID",
+    "api_key": "YOUR_DASHSCOPE_API_KEY",
+    "voice": "longanqian_v3.1",
+    "headphones": false,
+    "silence_duration_ms": 1000,
+    "max_call_minutes": 240,
+    "idle_minutes": 10,
+    "input_device": null,
+    "output_device": null,
+    "free_only": true,
+    "free_quota_confirmed_model": ""
+  }
 }

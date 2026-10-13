@@ -192,6 +192,8 @@ class PetWindow(QWidget):
         self._voice_mode = False       # 按住说话模式
         self._asr = None
         self._recording = False
+        self._realtime_voice = None
+        self._voice_call_panel = None
         # _vision_done 只连助教槽; 战棋看牌单独走 _see_board 回调, 避免互相覆盖
 
         # --- 背景亮度自适应（深色桌面给黑猫加光晕，浅色桌面加深阴影）---
@@ -264,6 +266,8 @@ class PetWindow(QWidget):
         m.addAction("显示/隐藏").triggered.connect(
             lambda: self.hide() if self.isVisible() else (self.show(), self._force_top()))
         m.addSeparator()
+        m.addAction("🎙 持续语音对话（阿里）").triggered.connect(self._open_realtime_voice)
+        m.addAction("⚙ 阿里语音配置").triggered.connect(self._configure_realtime_voice)
         m.addAction("退出").triggered.connect(self._quit)
         self._tray.setContextMenu(m)
         self._tray.show()
@@ -470,6 +474,8 @@ class PetWindow(QWidget):
             for name in self._anim.sticker_names:
                 sticker_menu.addAction(name).triggered.connect(
                     lambda _, n=name: self._play_sticker_action(n))
+        menu.addAction("🎙 持续语音对话（阿里）").triggered.connect(self._open_realtime_voice)
+        menu.addAction("⚙ 阿里语音配置").triggered.connect(self._configure_realtime_voice)
         voice_item = menu.addAction("🎤 按住说话（开启：按住企鹅说话，松开发送）")
         voice_item.setCheckable(True)
         voice_item.setChecked(self._voice_mode)
@@ -835,6 +841,8 @@ class PetWindow(QWidget):
         self._say_with_expression(f"咕嘎～{name}！", "happy", "none")
 
     def _toggle_voice(self, checked):
+        if checked and self._realtime_active():
+            return
         self._voice_mode = bool(checked)
         if self._voice_mode:
             self._say_with_expression("咕嘎～按住本鹅说话，松开发送！", "normal", "none")
@@ -843,6 +851,8 @@ class PetWindow(QWidget):
             self._say_with_expression("咕嘎～语音模式关了。", "normal", "none")
 
     def _start_voice(self):
+        if self._realtime_active():
+            return
         if self._recording:
             return
         from core.asr import ASRRecorder
@@ -880,6 +890,53 @@ class PetWindow(QWidget):
             return
         self._ask_with_ctx(text)
 
+    def _realtime_active(self):
+        engine = getattr(self, '_realtime_voice', None)
+        return bool(engine and engine.active)
+
+    def _configure_realtime_voice(self):
+        from ui.voice_dialog import VoiceSettingsDialog
+        if self._realtime_active():
+            self._voice_call_panel.raise_()
+            return
+        VoiceSettingsDialog(self).exec_()
+
+    def _open_realtime_voice(self):
+        from core.realtime_voice import RealtimeVoice, load_settings, connection_url
+        from ui.voice_dialog import VoiceCallDialog, VoiceSettingsDialog
+        if self._realtime_active():
+            self._voice_call_panel.show()
+            self._voice_call_panel.raise_()
+            return
+        try:
+            connection_url(load_settings())
+        except Exception:
+            if VoiceSettingsDialog(self).exec_() != VoiceSettingsDialog.Accepted:
+                return
+        if self._recording:
+            self._recording = False
+            if self._asr:
+                self._asr._recording = False
+        self._voice_mode = False
+        self._tts.stop()
+        self._on_tts_finished()
+        if self._voice_call_panel:
+            self._voice_call_panel.close()
+            self._voice_call_panel.deleteLater()
+        if self._realtime_voice:
+            self._realtime_voice.deleteLater()
+        self._realtime_voice = RealtimeVoice(self)
+        self._realtime_voice.speaking.connect(self._on_realtime_speaking)
+        self._voice_call_panel = VoiceCallDialog(self._realtime_voice, self)
+        self._voice_call_panel.show()
+        self._realtime_voice.start()
+
+    def _on_realtime_speaking(self, on):
+        if on:
+            self._on_tts_started('')
+        else:
+            self._on_tts_finished()
+
     def _say(self, text: str, expression: str = None, action: str = "none"):
         self._say_with_expression(text, expression, action)
 
@@ -911,7 +968,8 @@ class PetWindow(QWidget):
             self._anim.trigger_action(action)
 
         # 播放 TTS 语音
-        self._tts.speak(text)
+        if not self._realtime_active():
+            self._tts.speak(text)
 
     def _on_tts_started(self, text: str):
         self._talk_timer.start()
@@ -924,7 +982,7 @@ class PetWindow(QWidget):
 
     def _talk_tick(self):
         self._talk_count = getattr(self, '_talk_count', 0) + 1
-        if self._tts.is_speaking:
+        if self._tts.is_speaking or (self._realtime_active() and self._realtime_voice.is_speaking):
             if self._talk_count % 3 < 2:
                 self._anim.mouth_open = random.uniform(0.2, 0.6)
             else:
@@ -1159,6 +1217,8 @@ class PetWindow(QWidget):
 
     def _auto_watch(self):
         """每 4 秒轮询日志：检测 招募→战斗 转换，自动给胜率+军师建议"""
+        if self._realtime_active():
+            return
         import time as _time
         # 正在人工分析或 AI 忙时跳过
         if self._watch_analyzing:
@@ -1583,6 +1643,8 @@ class PetWindow(QWidget):
         self._config.save_status(s["hunger"], s["happy"], s["energy"])
 
     def _quit(self):
+        if self._realtime_voice:
+            self._realtime_voice.stop()
         self._save_state()
         for _t in (self._bg_timer, self._watch_timer, self._save_timer,
                    self._bounce_timer, self._talk_timer, self._bubble_timer,
