@@ -35,6 +35,8 @@ def _game_server_from_log() -> tuple:
     try:
         import os as _os
         from core import log_reader
+        # 关键：先刷新日志会话路径（游戏重启后新会话目录）
+        log_reader._refresh_log_path()
         base = _os.path.dirname(log_reader.LOG_PATH) if log_reader.LOG_PATH else None
         if not base:
             return None, None
@@ -208,48 +210,42 @@ def force_disconnect_hearthstone():
 
     定位策略（对齐 HDT-Reconnector）：
     1. 优先：从 GameNetLogger.log 解析 GotoGameServe 的 address=IP:端口，
-       只断精确匹配的那条连接（最可靠，绝不误伤认证/遥测/代理连接）
-    2. 回退：按 PID + 公网 IP + 游戏端口(1119/3724) 扫描
+       只断【精确匹配的一条】连接——游戏可能同时连着 1119 和 3724，
+       但只有日志里 GotoGameServe 指向的那条才是当前对局连接，
+       全断会触发重连失败回主菜单。
+    2. 回退：日志解析失败时，只断【最新一条】公网游戏端口连接
+       （reconnector 的"最后一条 ESTAB 连接"策略，避免误伤）。
     """
     pids = _find_hearthstone_pids()
     if not pids:
         return 0, '炉石传说未在运行'
-    if not _is_admin():
-        return 0, '需要管理员权限（请用管理员方式启动桌宠，或右键管理员运行）'
     rows = _get_tcp_rows()
     hs_rows = [r for r in rows if r[5] in pids and r[4] != 0]
     if not hs_rows:
         return 0, '没找到炉石的对局连接（可能不在战斗中）'
 
-    game_rows = []
-    src = '日志'
-    # 1) 日志精确匹配
+    # 1) 日志精确匹配（只取一条）
     ip_s, port_s = _game_server_from_log()
     if ip_s and port_s:
-        import ctypes as _ct
         try:
-            target = socket.inet_aton(ip_s)
-            target_int = int.from_bytes(target, 'little')
-        except Exception:
-            target_int = None
-        if target_int is not None:
+            target = int.from_bytes(socket.inet_aton(ip_s), 'little')
             game_rows = [r for r in hs_rows
-                         if r[3] == target_int and socket.ntohs(r[4]) == port_s]
-            # 如果精确匹配不到（日志更新慢/连接已变），放宽为同 IP 同端口族
-            if not game_rows:
-                game_rows = [r for r in hs_rows
-                             if r[3] == target_int and socket.ntohs(r[4]) in GAME_PORTS]
-    # 2) 回退端口扫描
-    if not game_rows:
-        src = '端口'
-        game_rows = [r for r in hs_rows
-                     if _is_wan(r[3]) and socket.ntohs(r[4]) in GAME_PORTS]
-    if not game_rows:
-        ipv6_only = bool([r for r in _get_tcp6_rows()
-                          if r[5] in pids and socket.ntohs(r[4]) in GAME_PORTS])
-        if ipv6_only:
-            return 0, '对局连接走的是 IPv6（梯子/双栈网络），暂时无法拔线'
-        return 0, '没找到对局服务器连接（不在战斗中？）'
+                         if r[3] == target and socket.ntohs(r[4]) == port_s]
+            if game_rows:
+                return _close_rows(game_rows[:1], '日志')
+        except Exception:
+            pass
+
+    # 2) 回退：最新一条公网游戏端口连接（取连接表中最后出现的）
+    cand = [r for r in hs_rows
+            if _is_wan(r[3]) and socket.ntohs(r[4]) in GAME_PORTS]
+    if cand:
+        return _close_rows(cand[-1:], '端口')
+    return 0, '没找到对局服务器连接（不在战斗中？）'
+
+
+def _close_rows(game_rows, src):
+    """对指定连接执行 DELETE_TCB，返回 (成功数, 来源/错误)"""
     closed = 0
     errors = []
     for row in game_rows:
@@ -257,11 +253,10 @@ def force_disconnect_hearthstone():
         if ret == 0:
             closed += 1
         elif ret == 1168:
-            continue  # 连接已消失（重试窗口内自然断开/游戏已重连）
+            continue  # 连接已消失（游戏自己重连了）
         else:
             errors.append(ret)
-            # 重试一次（连接表动态变化，偶尔第一次调用失败）
-            ret2 = _set_delete_tcb(row)
+            ret2 = _set_delete_tcb(row)  # 重试一次
             if ret2 == 0:
                 closed += 1
                 if errors:
@@ -276,6 +271,42 @@ def _is_admin():
         return bool(ctypes.windll.shell32.IsUserAnAdmin())
     except Exception:
         return False
+
+
+def self_test() -> str:
+    """拔线自检：完整链路逐步记录，返回报告文本（供企鹅右键菜单调用）"""
+    import os as _os
+    import time as _time
+    lines = []
+    lines.append(f"[自检 {_time.strftime('%H:%M:%S')}] 管理员={_is_admin()}")
+    pids = _find_hearthstone_pids()
+    lines.append(f"炉石进程: {pids if pids else '未运行'}")
+    if not pids:
+        lines.append("结论: 炉石未运行，无法拔线（先开一局）")
+        return "\n".join(lines)
+    rows = _get_tcp_rows()
+    hs = [r for r in rows if r[5] in pids and r[4] != 0]
+    lines.append(f"炉石 TCP 连接数: {len(hs)}")
+    ip_s, port_s = _game_server_from_log()
+    lines.append(f"日志解析对局服务器: {ip_s}:{port_s if port_s else '?'}")
+    if ip_s:
+        target = int.from_bytes(socket.inet_aton(ip_s), 'little')
+        matched = [r for r in hs if r[3] == target and socket.ntohs(r[4]) == port_s]
+        lines.append(f"精确匹配连接: {len(matched)} 条")
+        if matched:
+            ra = socket.inet_ntoa(ctypes.c_ulong(matched[0][3]).value.to_bytes(4, 'little'))
+            lines.append(f"将断开: {ra}:{socket.ntohs(matched[0][4])} state={matched[0][0]}")
+            ret = _set_delete_tcb(matched[0])
+            lines.append(f"SetTcpEntry 返回: {ret}（0=成功）")
+            if ret != 0:
+                lines.append(f"错误说明: {_err_text(ret)}")
+            else:
+                lines.append("已断开 ✓ 等待游戏自动重连（游戏应弹'正在重连'后自动恢复）")
+    else:
+        lines.append("日志无服务器记录 → 无法精确匹配")
+        cand = [r for r in hs if _is_wan(r[3]) and socket.ntohs(r[4]) in GAME_PORTS]
+        lines.append(f"回退候选连接: {len(cand)} 条")
+    return "\n".join(lines)
 
 
 if __name__ == '__main__':

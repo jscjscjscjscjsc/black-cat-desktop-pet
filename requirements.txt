@@ -5,3 +5,4 @@ edge-tts>=6.1
 requests>=2.28
 sounddevice>=0.5
 vosk>=0.3
+pythonnet>=3.0

@@ -68,6 +68,8 @@ class PetWindow(QWidget):
     RES_DIR = os.path.join(os.path.dirname(__file__), '..', 'resources')
     # 视觉分析结果信号（后台线程 → 主线程，避免跨线程操作 Qt 界面）
     _vision_done = pyqtSignal(str)
+    # 战棋分数识别结果信号（独立于助教 _vision_done, 避免冲突）
+    _bg_rating_done = pyqtSignal(str)
 
     def __init__(self):
         super().__init__(None, Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
@@ -176,6 +178,14 @@ class PetWindow(QWidget):
         self._ai.reply_ready.connect(self._on_ai_reply)
         self._ai.failed.connect(self._on_ai_fail)
         self._vision_done.connect(self._on_vision_result)
+        self._bg_rating_done.connect(self._on_bg_rating_done)
+
+        # --- 悬停查分(右键开关): 轮询鼠标悬停的玩家, 显示其分数 ---
+        self._hover_rating_on = False
+        self._last_hovered_id = 0
+        self._hover_timer = QTimer(self)
+        self._hover_timer.setInterval(500)
+        self._hover_timer.timeout.connect(self._poll_hovered_rating)
 
         # --- 打字/语音直接交流（无对话框）---
         self._inline_input = None      # 迷你输入条（企鹅下方）
@@ -190,14 +200,14 @@ class PetWindow(QWidget):
         self._bg_sampling = False
         self._bg_fail_count = 0
         self._bg_timer = QTimer(self)
-        self._bg_timer.setInterval(5000)
+        self._bg_timer.setInterval(15000)
         self._bg_timer.timeout.connect(self._sample_background)
         self._bg_timer.start()
 
         self._save_timer = QTimer(self)
         # --- 自动观战：轮询日志，战斗开始自动给胜率+建议（及时性核心） ---
         self._watch_timer = QTimer(self)
-        self._watch_timer.setInterval(4000)
+        self._watch_timer.setInterval(8000)
         self._watch_timer.timeout.connect(self._auto_watch)
         self._watch_timer.start()
         self._watch_phase = ''       # 上次观测到的阶段: ''/'recruit'/'combat'
@@ -426,13 +436,25 @@ class PetWindow(QWidget):
     # ==================== 右键 ====================
 
     def contextMenuEvent(self, e):
+        from PyQt5.QtGui import QPalette
         menu = QMenu(self)
+        # 关键修复：强制不透明调色板，避免继承父窗口（透明）的背景
+        pal = menu.palette()
+        pal.setColor(QPalette.Window, QColor('#191923'))
+        pal.setColor(QPalette.WindowText, QColor('white'))
+        pal.setColor(QPalette.Text, QColor('white'))
+        pal.setColor(QPalette.Highlight, QColor(70, 70, 90))
+        pal.setColor(QPalette.HighlightedText, QColor('white'))
+        menu.setPalette(pal)
+        menu.setAutoFillBackground(True)
+        menu.setAttribute(Qt.WA_StyledBackground, True)
         menu.setStyleSheet("""
-            QMenu { background: rgba(25,25,35,0.96); border: 1px solid rgba(255,255,255,0.08);
-                    border-radius: 10px; padding: 6px; color: white; font-size: 12px; }
-            QMenu::item { padding: 7px 18px; border-radius: 6px; margin: 1px; }
-            QMenu::item:hover { background: rgba(255,255,255,0.1); }
-            QMenu::separator { height: 1px; background: rgba(255,255,255,0.05); margin: 4px 10px; }
+            QMenu { background-color: #191923; color: white; font-size: 12px;
+                    border: 1px solid #444; padding: 4px; }
+            QMenu::item { padding: 6px 24px 6px 16px; }
+            QMenu::item:selected { background-color: #46465a; }
+            QMenu::separator { height: 1px; background: #444; margin: 4px 8px; }
+            QMenu::icon { padding-left: 4px; }
         """)
         for k, info in ACTIONS.items():
             menu.addAction(f"{info.icon}  {info.label}").triggered.connect(
@@ -453,8 +475,14 @@ class PetWindow(QWidget):
         voice_item.setChecked(self._voice_mode)
         voice_item.triggered.connect(self._toggle_voice)
         menu.addAction("⚡ 一键拔线（跳战斗动画，F1）").triggered.connect(self._netcut)
+        menu.addAction("🔧 拔线自检（写 netcut_selftest.log）").triggered.connect(self._netcut_selftest)
         menu.addAction("💬 打字对话").triggered.connect(lambda: self._open_input('chat'))
         menu.addAction("🎮 分析对局（看屏幕）").triggered.connect(self._see_board)
+        menu.addAction("📊 读内存看分数（即时）").triggered.connect(self._show_bg_ratings)
+        hover_item = menu.addAction("🔍 悬停查分（开启后悬停玩家显示分数）")
+        hover_item.setCheckable(True)
+        hover_item.setChecked(self._hover_rating_on)
+        hover_item.triggered.connect(self._toggle_hover_rating)
         menu.addAction("🔮 阵容展望（招募阶段点企鹅也行）").triggered.connect(self._lineup_outlook)
         menu.addAction("📋 最近战绩（记5场，来调侃）").triggered.connect(self._show_history)
         menu.addSeparator()
@@ -1006,6 +1034,30 @@ class PetWindow(QWidget):
 
     # ==================== 一键拔线 ====================
 
+    def _netcut_selftest(self):
+        """拔线自检：企鹅(管理员)内执行完整链路，结果写日志文件"""
+        from core.netcut import self_test
+        report = self_test()
+        try:
+            path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                                'netcut_selftest.log')
+            with open(path, 'w', encoding='utf-8') as f:
+                f.write(report + '\n')
+            print('[拔线自检]\n' + report)
+        except Exception:
+            pass
+        # 气泡简短反馈
+        first = report.splitlines()[0] if report else ''
+        if 'SetTcpEntry 返回: 0' in report:
+            self._say_with_expression("咕嘎～自检通过！连接已断开，看游戏是否自动重连～",
+                                      "playful", "bounce")
+        elif '未运行' in report:
+            self._say_with_expression("咕嘎？炉石没开，开一局再自检！", "sad", "shake")
+        else:
+            self._say_with_expression(
+                f"咕嘎？自检有问题，详见 netcut_selftest.log（{first}）",
+                "sad", "shake")
+
     def _netcut(self):
         """强制断开炉石对局连接（跳战斗动画的时间技巧），需管理员权限"""
         import time as _time
@@ -1047,9 +1099,8 @@ class PetWindow(QWidget):
             return
         from core.netcut import force_disconnect_hearthstone
         n, msg = force_disconnect_hearthstone()
-        if msg and n == 0:
-            self._say_with_expression(f"咕嘎？{msg}", "sad", "shake")
-        elif n > 0:
+        # msg 语义：n>0 时是定位来源（'日志'/'端口'）；n==0 时是错误说明
+        if n > 0:
             self._last_netcut_t = now
             self._netcut_count = n_cut + 1
             self._netcut_reconnect_until = now + 30  # 重连保护期
@@ -1058,35 +1109,50 @@ class PetWindow(QWidget):
                 f"咕嘎～已断开 {n} 条对局连接{src}（本局第 {n_cut + 1} 次）！正在重连，别乱点～",
                 "playful", "bounce")
             self._watch_reconnect(0)
-        else:
+        elif '管理员权限' in (msg or '') or 'NOT_ELEVATED' in (msg or ''):
+            self._say_with_expression(
+                "咕嘎？企鹅没管理员权限，拔不了线！桌面有个"
+                "「修复拔线权限-右键管理员运行.bat」，右键管理员运行一次，"
+                "重启电脑后就能拔线了！", "sad", "shake")
+        elif msg:
             self._say_with_expression(f"咕嘎？{msg}", "sad", "shake")
+        else:
+            # n==0 且无 msg：连接已消失（游戏自己重连了）→ 视为成功
+            self._say_with_expression(
+                "咕嘎～连接已经自己断开了，等重连就好～", "normal", "peek")
 
     def _watch_reconnect(self, attempt: int):
-        """拔线后轮询日志：确认重连成功（每 3 秒，最多 5 次）"""
+        """拔线后轮询日志：确认重连成功（每 3 秒，最多 8 次）
+        重连成功信号：日志恢复活跃（游戏已连回服务器继续写日志）"""
         import os as _os
         from core import log_reader
         try:
             b = log_reader.read_current_board()
-            # 重连成功信号：日志有活动 且 回到招募阶段（对手不可见）
-            if b and b.get('active') and not b.get('theirs'):
-                self._netcut_reconnect_until = 0
-                self._say_with_expression(
-                    "咕嘎～重连成功，跳过动画直接进招募！本局还能再拔"
-                    f"{9 - getattr(self, '_netcut_count', 0)} 次～",
-                    "happy", "bounce")
-                return
-            if b and b.get('active') and b.get('theirs'):
-                # 还在战斗中：可能刚重连还在原战斗里，再等等
-                if attempt < 5:
+            if b is None:
+                # 日志暂时不可读（重连瞬间）→ 继续等
+                if attempt < 8:
                     QTimer.singleShot(3000, lambda: self._watch_reconnect(attempt + 1))
                 return
+            if b.get('active') is False and b.get('reason') == 'log_stale':
+                # 日志没动 = 还在重连中/游戏暂停写日志 → 继续等
+                if attempt < 8:
+                    QTimer.singleShot(3000, lambda: self._watch_reconnect(attempt + 1))
+                return
+            # 日志活跃（无论招募/战斗）→ 重连成功
+            self._netcut_reconnect_until = 0
+            phase = '回到招募' if not b.get('theirs') else '回到战斗中'
+            self._say_with_expression(
+                f"咕嘎～重连成功，{phase}！本局还能再拔"
+                f"{9 - getattr(self, '_netcut_count', 0)} 次～",
+                "happy", "bounce")
+            return
         except Exception:
             pass
-        if attempt < 5:
+        if attempt < 8:
             QTimer.singleShot(3000, lambda: self._watch_reconnect(attempt + 1))
         else:
             self._say_with_expression(
-                "咕嘎？重连有点慢…如果 10 秒后还没回招募，可能是本局拔太多被限制了。",
+                "咕嘎？重连有点慢…再等几秒，别点退出。",
                 "surprised", "peek")
 
     # ==================== 自动观战（战斗开始自动分析） ====================
@@ -1115,20 +1181,16 @@ class PetWindow(QWidget):
                 return
             in_combat = bool(board.get('theirs'))
             phase = 'combat' if in_combat else 'recruit'
-            # 新对局：重置每局拔线计数
-            if self._watch_phase and self._watch_phase == 'recruit' and phase == 'recruit':
-                pass  # 同一招募阶段内不重置
-            elif phase == 'recruit' and self._watch_phase != '':
-                # 从战斗/空回到招募 = 可能新对局或拔线重连回来；
-                # 用"离上次战斗结束较久"判断新对局，简单起见：回到招募时若
-                # 拔线计数>0 且超过 120 秒没有战斗，视为新对局重置
-                import time as _t2
-                if _t2.time() - getattr(self, '_last_combat_t', 0) > 120:
+            # 拔线计数重置：从战斗/对局结束回到招募 = 新对局开始，重置拔线次数
+            # （不依赖 game_over 检测，因为 AI 忙时可能跳过 game_over 窗口）
+            if phase == 'recruit' and self._watch_phase in ('combat', 'gameover'):
+                old_count = getattr(self, '_netcut_count', 0)
+                if old_count > 0:
                     self._netcut_count = 0
+                    self._netcut_reconnect_until = 0
+                    print(f'[拔线] 检测到新对局（{self._watch_phase}→recruit），拔线次数已重置（原{old_count}次）')
             if phase == 'combat':
                 self._last_combat_t = _time.time()
-            # 自动分析已关闭: 用户需手动点击右键菜单"分析对局（看屏幕）"触发
-            # 这里只跟踪阶段状态, 用于拔线计数重置等被动逻辑
             self._watch_phase = phase
         except Exception:
             pass
@@ -1138,6 +1200,9 @@ class PetWindow(QWidget):
     def _on_game_over(self, board):
         """对局结束（自动观战检测到）：记录战绩 → 按最近战绩调侃播报"""
         from core import match_history
+        # 对局结束 = 新对局即将开始: 重置每局拔线计数, 避免跨局累计
+        self._netcut_count = 0
+        self._netcut_reconnect_until = 0
         ps = board.get('playstate', '')
         result = 'win' if ps == 'WON' else ('concede' if ps == 'CONCEDED' else 'loss')
         h = match_history.record_result(result=result, place=board.get('place'),
@@ -1166,6 +1231,171 @@ class PetWindow(QWidget):
             f"（吃鸡{s['wins']}次{avg}）！{roast}", "playful", "point")
 
     # ==================== 看棋盘（日志优先，视觉兜底） ====================
+
+    def _show_bg_ratings(self):
+        """读内存看分数: HearthMirror.dll 即时读取自己的战棋分数+8人大厅
+        比视觉快10倍(零截屏零API), 但只能读自己的分数(炉石内存不存对手MMR)
+        """
+        self._say_with_expression("咕嘎～本鹅读内存看看分数！", "happy", "point")
+        threading.Thread(target=self._read_ratings_bg, daemon=True).start()
+
+    def _read_ratings_bg(self):
+        """后台线程: 读内存拿分数 + API查对手分数, 通过信号回主线程"""
+        from core import memory_reader, leaderboard_api
+        import json as _json
+        my_rating = memory_reader.get_my_rating()
+        lobby = memory_reader.get_lobby_info()
+        # 查每个对手的API分数
+        if lobby:
+            for p in lobby:
+                try:
+                    p['api_score'] = leaderboard_api.lookup_score(p['name'])
+                except Exception:
+                    p['api_score'] = None
+        # 信号回主线程
+        self._bg_rating_done.emit(
+            _json.dumps({'my_rating': my_rating, 'lobby': lobby}))
+
+    def _on_bg_rating_done(self, text):
+        """主线程槽: 内存读取+API查询完成 -> 直接播报8人分数"""
+        import json as _json
+        try:
+            data = _json.loads(text)
+        except Exception:
+            self._say_with_expression(
+                "咕嘎？读内存失败了，炉石是不是没开？", "sad", "shake")
+            return
+        my_rating = data.get('my_rating')
+        lobby = data.get('lobby')
+        if my_rating is None:
+            self._say_with_expression(
+                "咕嘎？读不到分数，炉石没开或不在对局里！", "sad", "shake")
+            return
+        if not lobby:
+            self._say_with_expression(
+                f"咕嘎～你的战棋分数: {my_rating}！但不在对局中。",
+                "normal", "point")
+            return
+        # 构建8人分数播报(直接显示, 不走AI润色, 更快更准)
+        lines = [f"你的战棋分数: {my_rating}", "本局8人分数:"]
+        on_board = 0
+        for i, p in enumerate(lobby):
+            name = p['name']
+            api_score = p.get('api_score')
+            me_tag = " (你)" if p.get('is_me') else ""
+            if api_score:
+                lines.append(f"  {i+1}. {name}{me_tag} = {api_score}分")
+                on_board += 1
+            else:
+                lines.append(f"  {i+1}. {name}{me_tag} = 未上榜")
+        if on_board == 0:
+            lines.append("本局无人上榜(分数都较低或缓存过期)")
+        # 直接显示在大气泡(不走AI, 避免延迟)
+        self._say_with_expression("\n".join(lines), "normal", "point")
+
+    def _toggle_hover_rating(self):
+        """开关: 悬停查分"""
+        self._hover_rating_on = not self._hover_rating_on
+        if self._hover_rating_on:
+            # 先加载DLL(可能需要几秒)
+            self._say_with_expression("咕嘎～悬停查分开启！加载内存模块...", "happy", "bounce")
+            threading.Thread(target=self._init_hover_rating_bg, daemon=True).start()
+        else:
+            self._hover_timer.stop()
+            self._last_hovered_id = 0
+            self._say_with_expression("咕嘎～悬停查分已关闭。", "normal", "none")
+
+    def _init_hover_rating_bg(self):
+        """后台线程: 初始化DLL加载 + 预热排行榜API缓存, 成功后启动轮询定时器"""
+        from core import memory_reader, leaderboard_api
+        # 1. 加载磁盘缓存(秒级)
+        leaderboard_api.load_cache_from_disk()
+        ok = memory_reader._ensure_loaded()
+        if not ok:
+            err = memory_reader.get_load_error() or "未知错误"
+            QTimer.singleShot(0, lambda: self._say_with_expression(
+                f"咕嘎？内存模块加载失败: {err}", "sad", "shake"))
+            return
+        # 2. 检查API缓存是否需要更新(后台拉取, 不阻塞)
+        cache = leaderboard_api.get_cache()
+        if cache is None:
+            QTimer.singleShot(0, lambda: self._say_with_expression(
+                "咕嘎～内存就绪！正在拉取国服排行榜(约5秒)...", "happy", "point"))
+            def _on_lb_done(c):
+                if c:
+                    QTimer.singleShot(0, lambda: self._say_with_expression(
+                        f"咕嘎～排行榜就绪！{c['total']}人数据, 悬停玩家即可看分数～",
+                        "happy", "bounce"))
+                    QTimer.singleShot(0, self._hover_timer.start)
+                else:
+                    QTimer.singleShot(0, lambda: self._say_with_expression(
+                        "咕嘎？排行榜拉取失败, 但仍可看自己的分数", "sad", "shake"))
+                    QTimer.singleShot(0, self._hover_timer.start)
+            leaderboard_api.fetch_in_background(_on_lb_done)
+        else:
+            QTimer.singleShot(0, self._hover_timer.start)
+            QTimer.singleShot(0, lambda: self._say_with_expression(
+                f"咕嘎～就绪！排行榜缓存{cache['total']}人, 悬停玩家即可看分数～",
+                "happy", "point"))
+            # 后台悄悄刷新(过期才拉)
+            leaderboard_api.fetch_in_background()
+
+    def _poll_hovered_rating(self):
+        """定时器槽: 轮询鼠标悬停的玩家实体ID(放后台线程避免阻塞UI)"""
+        if not self._hover_rating_on:
+            return
+        threading.Thread(target=self._poll_hover_bg, daemon=True).start()
+
+    def _poll_hover_bg(self):
+        """后台线程: 读悬停实体ID, 变化时显示8人分数气泡"""
+        from core import memory_reader, leaderboard_api
+        eid = memory_reader.get_hovered_entity_id()
+        if eid is None:
+            eid = 0
+        if eid == self._last_hovered_id:
+            return  # 没变化, 不处理
+        self._last_hovered_id = eid
+        if eid == 0:
+            return  # 停止悬停, 不显示(气泡自动消失)
+        # 有悬停: 读大厅8人 + 自己分数 + API匹配每人分数
+        my_rating = memory_reader.get_my_rating()
+        lobby = memory_reader.get_lobby_info()
+        if lobby:
+            for p in lobby:
+                try:
+                    p['api_score'] = leaderboard_api.lookup_score(p['name'])
+                except Exception:
+                    p['api_score'] = None
+        info = {
+            'entity_id': eid,
+            'my_rating': my_rating,
+            'lobby': lobby,
+        }
+        QTimer.singleShot(0, lambda: self._show_hover_rating(info))
+
+    def _show_hover_rating(self, info):
+        """主线程: 显示悬停时8人分数气泡(实体ID无法精确映射到单个玩家,
+        显示当前8人各自的分数列表, 让用户对照悬停位置)"""
+        my_rating = info.get('my_rating')
+        lobby = info.get('lobby')
+        if my_rating is None:
+            return  # 读不到分数, 不显示
+        if not lobby:
+            self._say_with_expression(
+                f"你的战棋分数: {my_rating}", "normal", "point")
+            return
+        # 构建8人分数列表(按内存顺序, 通常对应游戏内排行榜位置)
+        lines = []
+        for i, p in enumerate(lobby):
+            name = p['name']
+            api_score = p.get('api_score')
+            me_tag = " (你)" if p.get('is_me') else ""
+            if api_score:
+                lines.append(f"{i+1}.{name}{me_tag}={api_score}")
+            else:
+                lines.append(f"{i+1}.{name}{me_tag}=未上榜")
+        text = " | ".join(lines)
+        self._say_with_expression(text, "normal", "point")
 
     def _see_board(self):
         """① power.log 日志解析（零API零429，最精确）② 失败才走 GLM 视觉"""
@@ -1219,7 +1449,7 @@ class PetWindow(QWidget):
                 opp_text = summarize_opponent(theirs)
             except Exception as e:
                 print(f"[对手分析] 失败: {e}")
-            speak = f"咕嘎～模拟了 2000 场：{rate_text}"
+            speak = f"咕嘎～模拟了 600 场：{rate_text}"
             if insight:
                 speak += f" {insight}"
             self._say_with_expression(speak, "surprised", "point")
@@ -1280,7 +1510,7 @@ class PetWindow(QWidget):
                         opp_text = summarize_opponent(theirs)
                     except Exception as e:
                         print(f"[对手分析] 失败: {e}")
-                    speak = f"咕嘎～模拟了 2000 场：{rate_text}"
+                    speak = f"咕嘎～模拟了 600 场：{rate_text}"
                     if insight:
                         speak += f" {insight}"
                     self._say_with_expression(speak, "surprised", "point")
@@ -1355,7 +1585,8 @@ class PetWindow(QWidget):
     def _quit(self):
         self._save_state()
         for _t in (self._bg_timer, self._watch_timer, self._save_timer,
-                   self._bounce_timer, self._talk_timer, self._bubble_timer):
+                   self._bounce_timer, self._talk_timer, self._bubble_timer,
+                   self._hover_timer):
             try:
                 _t.stop()
             except Exception:
@@ -1367,10 +1598,15 @@ class PetWindow(QWidget):
             self._status.stop()
         except Exception:
             pass
-        self._tray.hide()
+        try:
+            self._tray.hide()
+        except Exception:
+            pass
         QApplication.quit()
+        # 强制退出: pythonnet/CLR 后台线程会阻止进程退出, 必须强制
+        import os as _os
+        _os._exit(0)
 
     def closeEvent(self, e):
-        self._save_state()
-        self.hide()
-        e.ignore()
+        # 点X/Alt+F4 直接退出(不再只隐藏导致进程残留)
+        self._quit()

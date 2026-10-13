@@ -425,6 +425,7 @@ def _build_board():
     # 对手：仅当前战斗中在 PLAY 区的随从（按控制器分组，取数量最多的那家）
     theirs = []
     opp_groups = {}
+    from core import card_db as _card_db
     for eid, ent in _ents.items():
         c = ent.get('CONTROLLER')
         if c is None or c == my_controller:
@@ -436,16 +437,18 @@ def _build_board():
             continue
         if not ent.get('ATK') and not ent.get('HEALTH'):
             continue
+        _db = _card_db.lookup(cid)
         opp_groups.setdefault(c, []).append({
             'name': cid,
             'atk': ent.get('ATK', 0),
             'hp': ent.get('HEALTH', 0),
             'taunt': ent.get('TAUNT', 0) == 1,
             'divine_shield': ent.get('DIVINE_SHIELD', 0) == 1,
-            'windfury': ent.get('WINDFURY', 0) == 1,
-            'poison': ent.get('POISONOUS', 0) == 1,
+            'windfury': ent.get('WINDFURY', 0) == 1 or ent.get('MEGA_WINDFURY', 0) == 1,
+            'poison': ent.get('POISONOUS', 0) == 1 or ent.get('VENOMOUS', 0) == 1,
             'reborn': ent.get('REBORN', 0) == 1,
             'golden': ent.get('GOLDEN', 0) == 1,
+            'deathrattle': [_db['deathrattle']] if _db and _db.get('deathrattle') else None,
         })
     if opp_groups:
         theirs = max(opp_groups.values(), key=len)

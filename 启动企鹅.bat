@@ -1,6 +1,17 @@
 @echo off
 rem ===== Guga Penguin launcher (ASCII-only, safe under any codepage) =====
+rem ===== Auto-elevate to admin (required for netcut / disconnect feature) =====
+
+rem --- check admin (fltmc requires admin privileges) ---
+fltmc >nul 2>&1 || (
+    rem --- not admin: request UAC elevation ---
+    powershell -NoProfile -Command "Start-Process -FilePath '%~f0' -Verb RunAs -WorkingDirectory '%~dp0'"
+    exit /b
+)
+
 cd /d "%~dp0"
+rem --- kill stale pythonw (old pet instances) ---
+taskkill /F /IM pythonw.exe >nul 2>&1
 
 rem ----- find python: python / py / full paths (must actually RUN, ignore Store alias) -----
 set "PYTHON="
@@ -40,6 +51,6 @@ if errorlevel 1 (
     )
 )
 
-echo Starting Guga Penguin...
+echo Starting Guga Penguin (admin mode)...
 start "" "%PYTHONW%" launcher.py
 exit

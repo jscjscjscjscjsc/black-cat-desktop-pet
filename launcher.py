@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""黑猫桌宠守护启动器 — 由 启动黑猫.bat 用 pythonw 调用
+"""咕嘎企鹅桌宠守护启动器 — 由 启动黑猫.bat 用 pythonw 调用
 
 作用：
 - 以 __main__ 方式运行 main.py（等价于 python main.py）
@@ -17,22 +17,50 @@ import runpy
 ROOT = os.path.dirname(os.path.abspath(__file__))
 LOG_PATH = os.path.join(ROOT, 'startup.log')
 
-# 官方 Qt 目录（aqt 安装的 Qt 5.15.2；wheel 自带的 Qt 与本机 Win11 24H2 不兼容）
-# 存在时优先加载官方 Qt DLL 和插件，解决 "no Qt platform plugin" 错误
+# 官方 Qt 目录（aqt 安装的 Qt 5.15.2；存在时优先使用）
 QT_DIR = os.path.join(os.environ.get('USERPROFILE', ''),
                       '.zcode', 'tools', 'qt', '5.15.2', 'msvc2019_64')
 
 
 def _prepare_qt():
-    """在导入 PyQt5 之前：优先加载官方 Qt 的 DLL 与插件路径"""
-    qt_bin = os.path.join(QT_DIR, 'bin')
-    qt_plugins = os.path.join(QT_DIR, 'plugins')
-    if os.path.isdir(qt_bin):
+    """在导入 PyQt5 之前：设置正确的 Qt DLL 和插件路径，解决平台插件初始化失败问题"""
+    qt_bin = None
+    qt_plugins = None
+    
+    # 1. 优先尝试官方 Qt
+    official_bin = os.path.join(QT_DIR, 'bin')
+    official_plugins = os.path.join(QT_DIR, 'plugins')
+    if os.path.isdir(official_bin) and os.path.isdir(os.path.join(official_plugins, 'platforms')):
+        qt_bin = official_bin
+        qt_plugins = official_plugins
+    
+    # 2. 如果官方 Qt 不可用，自动检测 PyQt5 wheel 自带的 Qt
+    if qt_plugins is None:
+        try:
+            import PyQt5
+            pyqt5_dir = os.path.dirname(PyQt5.__file__)
+            # 尝试常见的 PyQt5 Qt 路径布局
+            for qt_sub in ['Qt5', 'Qt', 'qt5', 'qt']:
+                candidate_plugins = os.path.join(pyqt5_dir, qt_sub, 'plugins')
+                candidate_bin = os.path.join(pyqt5_dir, qt_sub, 'bin')
+                if os.path.isdir(os.path.join(candidate_plugins, 'platforms')):
+                    qt_plugins = candidate_plugins
+                    if os.path.isdir(candidate_bin):
+                        qt_bin = candidate_bin
+                    break
+        except Exception:
+            pass
+    
+    # 3. 应用找到的路径
+    if qt_bin:
         try:
             os.add_dll_directory(qt_bin)
         except Exception:
             pass
-    if os.path.isdir(qt_plugins):
+        # 把 bin 目录加入 PATH 作为备用
+        os.environ['PATH'] = qt_bin + os.pathsep + os.environ.get('PATH', '')
+    
+    if qt_plugins:
         os.environ['QT_PLUGIN_PATH'] = qt_plugins
         platforms = os.path.join(qt_plugins, 'platforms')
         if os.path.isdir(platforms):
@@ -40,12 +68,14 @@ def _prepare_qt():
         mediaservice = os.path.join(qt_plugins, 'mediaservice')
         if os.path.isdir(mediaservice):
             os.environ['QT_MEDIA_BACKEND'] = 'windows'
-    return os.path.isdir(qt_bin)
+    
+    return qt_plugins is not None
+
 
 
 def _show_error(text):
     try:
-        ctypes.windll.user32.MessageBoxW(None, text, '黑猫桌宠 - 启动失败', 0x10)
+        ctypes.windll.user32.MessageBoxW(None, text, '咕嘎企鹅桌宠 - 启动失败', 0x10)
     except Exception:
         pass
 
@@ -71,17 +101,26 @@ def main():
     sys.excepthook = excepthook
 
     # 管理员模式：一键拔线需要管理员权限（ai_config.json 的 run_as_admin）
-    # UAC 被拒绝时降级为普通模式继续运行
+    # UAC 被拒绝时降级为普通模式继续运行（桌宠不消失，仅拔线不可用）
     try:
         with open(os.path.join(ROOT, 'ai_config.json'), 'r', encoding='utf-8') as _f:
             _cfg = json.load(_f)
         if _cfg.get('run_as_admin'):
             import ctypes
             if not ctypes.windll.shell32.IsUserAnAdmin():
-                ctypes.windll.shell32.ShellExecuteW(
+                ret = ctypes.windll.shell32.ShellExecuteW(
                     None, 'runas', sys.executable,
                     f'"{os.path.join(ROOT, "launcher.py")}"', ROOT, 1)
-                sys.exit(0)
+                # ShellExecuteW 返回 > 32 表示成功; <= 32 表示失败(用户拒绝UAC等)
+                if ret and ret > 32:
+                    sys.exit(0)  # 新提权进程已启动, 当前进程退出
+                # UAC 被拒绝: 降级为普通模式继续运行, 桌宠不消失
+                # 拔线功能将不可用, 但其他功能正常
+                try:
+                    with open(os.path.join(ROOT, 'elev_fail.log'), 'w', encoding='utf-8') as _f2:
+                        _f2.write('elevation failed, ShellExecuteW ret=%s\n' % ret)
+                except Exception:
+                    pass
     except Exception:
         pass
 

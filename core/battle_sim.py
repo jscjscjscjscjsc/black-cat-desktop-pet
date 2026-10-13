@@ -64,13 +64,14 @@ def _apply_damage(target: Minion, dmg: int, poison: bool, poison_used: dict,
                   target_team: List[Minion], attacker: Optional[Minion]) -> bool:
     """对目标造成伤害。返回目标是否死亡。
     - 圣盾：挡掉本次伤害（不破防继续）
-    - 烈毒：造成伤害即秒杀（圣盾可挡）
+    - 烈毒：造成伤害即秒杀（每次都生效，圣盾可挡）
+      炉石规则: 烈毒随从每次造成伤害都秒杀目标, 一个烈毒随从可连续击杀
+      (风怒打2个、反击杀1个都该生效), 旧 poison_used 限制为错误实现
     """
     if target.divine_shield:
         target.divine_shield = False
         return False
-    if poison and not poison_used.get(id(attacker), False):
-        poison_used[id(attacker)] = True
+    if poison:
         target.hp = 0
     else:
         target.hp -= dmg
