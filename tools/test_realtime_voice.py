@@ -15,7 +15,7 @@ os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 from launcher import _prepare_qt
 _prepare_qt()
 from PyQt5.QtWidgets import QApplication
-from core.realtime_voice import DEFAULTS, PCMBuffer, RealtimeVoice, connection_url, session_settings
+from core.realtime_voice import DEFAULTS, PCMBuffer, RealtimeVoice, connection_url, session_settings, normalize_usage
 from ui.voice_dialog import VoiceSettingsDialog, VoiceCallDialog
 
 APP = QApplication.instance() or QApplication([])
@@ -57,6 +57,41 @@ class Socket:
 
 
 class VoiceTests(unittest.TestCase):
+    def setUp(self):
+        self.usage_temp = tempfile.TemporaryDirectory()
+        self.usage_patch = patch('core.realtime_voice.USAGE_PATH', Path(self.usage_temp.name)/'usage.log')
+        self.usage_patch.start()
+        self.addCleanup(self.usage_patch.stop)
+        self.addCleanup(self.usage_temp.cleanup)
+
+    def test_service_usage_missing_is_unknown_not_zero(self):
+        self.assertIsNone(normalize_usage(None))
+        self.assertIsNone(normalize_usage({'input_tokens':10}))
+        usage = normalize_usage(dict(total_tokens=224, input_tokens=156, output_tokens=68))
+        self.assertEqual(usage['total_tokens'], 224)
+        self.assertIsNone(usage['input_audio_tokens'])
+
+    def test_usage_counts_cancelled_responses_and_deduplicates(self):
+        engine = RealtimeVoice()
+        engine._cancelled.append('old')
+        event = dict(type='response.done', response=dict(id='old', status='cancelled', usage=dict(total_tokens=5,input_tokens=3,output_tokens=2)))
+        engine._handle_event(event)
+        engine._handle_event(event)
+        self.assertEqual(engine._usage_total, 5)
+        self.assertEqual(engine._usage_rounds, 1)
+        engine._handle_event(dict(type='response.done',response=dict(id='missing',status='cancelled')))
+        self.assertEqual(engine._usage_total, 5)
+        self.assertEqual(engine._usage_missing, 1)
+
+    def test_usage_ui_does_not_claim_zero_for_cancelled_round(self):
+        engine = RealtimeVoice()
+        dialog = VoiceCallDialog(engine)
+        dialog._usage(dict(rounds=2,reported_total_tokens=12,unreported_rounds=1,last_round=dict(round=2,usage=None)))
+        self.assertEqual(dialog.last_tokens.text(), '—')
+        self.assertEqual(dialog.total_tokens.text(), '≥ 12')
+        dialog.close()
+        dialog.deleteLater()
+
     def test_region_and_key_validation(self):
         self.assertIn('test-space.cn-beijing.maas.aliyuncs.com', connection_url(CFG))
         for changed in [dict(workspace_id='../../evil'), dict(region='elsewhere'), dict(api_key='')]:

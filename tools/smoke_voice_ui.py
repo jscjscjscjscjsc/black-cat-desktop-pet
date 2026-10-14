@@ -8,12 +8,16 @@ os.environ['QT_QPA_PLATFORM'] = 'offscreen'
 from launcher import _prepare_qt
 _prepare_qt()
 from PyQt5.QtCore import QTimer
+from PyQt5.QtGui import QFontDatabase
 from PyQt5.QtWidgets import QApplication
 from ui.pet_window import PetWindow
 from ui.voice_dialog import VoiceCallDialog
 from core.realtime_voice import RealtimeVoice
 
 app = QApplication([])
+for font_path in ('C:/Windows/Fonts/msyh.ttc', 'C:/Windows/Fonts/msyhbd.ttc', 'C:/Windows/Fonts/segoeui.ttf'):
+    if Path(font_path).exists():
+        QFontDatabase.addApplicationFont(font_path)
 with patch('core.keyboard_hook.KeyboardHook.start'), patch('ui.tts_engine.TTSEngine.speak'):
     pet = PetWindow()
     engine = RealtimeVoice(pet)
@@ -23,10 +27,15 @@ with patch('core.keyboard_hook.KeyboardHook.start'), patch('ui.tts_engine.TTSEng
     panel.show()
     panel._append('饲养员', '我想连续聊一会儿。')
     panel._append('咕嘎', '咕嘎，饲养员，本鹅在听呢。')
-    panel.status.setText('离线界面验证 · 麦克风未开启')
+    panel._status('持续通话中 · 可以直接说话')
+    panel._usage(dict(rounds=1, reported_total_tokens=224, unreported_rounds=0,
+        last_round=dict(round=1, usage=dict(total_tokens=224, input_tokens=156, output_tokens=68,
+            input_text_tokens=156, input_audio_tokens=None, output_text_tokens=14, output_audio_tokens=53))))
     def finish():
         assert pet._tray.contextMenu().actions()[2].text() == '🎙 持续语音对话'
         assert '连续聊' in panel.transcript.toPlainText()
+        assert panel.last_tokens.text() == '224'
+        panel.grab().save(str(Path(__file__).resolve().parents[1] / 'tools/qa/voice_call_preview.png'))
         for timer in pet.findChildren(QTimer):
             timer.stop()
         panel.close()
