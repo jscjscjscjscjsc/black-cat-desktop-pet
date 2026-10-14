@@ -135,6 +135,16 @@ class VoiceTests(unittest.TestCase):
         settings = session_settings(CFG, [('饲养员', 'x'*2000)]*150)
         self.assertLess(len(settings['instructions']), 17000)
         self.assertEqual(settings['turn_detection']['type'], 'smart_turn')
+        self.assertEqual(settings['max_history_turns'], 50)
+
+    def test_server_vad_interrupt_does_not_send_duplicate_cancel(self):
+        engine = RealtimeVoice()
+        engine._handle_event(dict(type='response.created', response={'id':'old'}))
+        engine._pcm.append(b'1234')
+        with patch.object(engine, '_send') as send:
+            engine._handle_event(dict(type='input_audio_buffer.speech_started'))
+            send.assert_not_called()
+        self.assertFalse(engine._pcm)
 
     def test_unconfirmed_free_quota_blocks_network(self):
         engine = RealtimeVoice()

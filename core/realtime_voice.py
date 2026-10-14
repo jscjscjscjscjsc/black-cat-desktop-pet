@@ -69,6 +69,7 @@ def session_settings(cfg, history=()):
                     voice=cfg.get('voice', 'longanqian_v3.1'),
                     instructions=PERSONA + ('\n之前的对话（可能不完整）：\n' + context if history else ''),
                     input_audio_format='pcm', output_audio_format='pcm',
+                    max_history_turns=50,
                     turn_detection=dict(type='smart_turn'))
     return dict(modalities=['text', 'audio'],
                 instructions=PERSONA + ('\n之前的对话（可能不完整）：\n' + context if history else ''),
@@ -276,8 +277,8 @@ class RealtimeVoice(QObject):
         if kind == 'input_audio_buffer.speech_started':
             self._last_activity = time.monotonic()
             self._cancel_audio()
-            if self._response_id:
-                self._send(dict(type='response.cancel', response_id=self._response_id))
+            # Qwen VAD already cancels the response server-side. A second cancel
+            # can return "no active response" and unnecessarily end the call.
             self.status.emit('正在听你说话…')
         elif kind == 'input_audio_buffer.speech_stopped':
             self.status.emit('咕嘎正在思考…')

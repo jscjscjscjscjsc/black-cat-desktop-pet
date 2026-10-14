@@ -927,9 +927,25 @@ class PetWindow(QWidget):
             self._realtime_voice.deleteLater()
         self._realtime_voice = RealtimeVoice(self)
         self._realtime_voice.speaking.connect(self._on_realtime_speaking)
+        self._realtime_voice.status.connect(self._on_realtime_status)
+        self._realtime_voice.failed.connect(self._on_realtime_status)
+        self._realtime_voice.finished.connect(lambda: self._on_realtime_status('通话已结束'))
         self._voice_call_panel = VoiceCallDialog(self._realtime_voice, self)
         self._voice_call_panel.show()
         self._realtime_voice.start()
+
+    def _on_realtime_status(self, message):
+        self._bubble_text = message
+        self._bubble_timer.start(10000)
+        self.update()
+        # Last status only: no microphone audio, transcript, token or headers.
+        try:
+            import json
+            from pathlib import Path
+            path = Path(__file__).resolve().parents[1] / 'realtime_status.log'
+            path.write_text(json.dumps({'status': message}, ensure_ascii=False), encoding='utf-8')
+        except OSError:
+            pass
 
     def _on_realtime_speaking(self, on):
         if on:

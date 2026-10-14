@@ -42,3 +42,14 @@ Qwen-Audio模型原生音频历史容量与会话持续时长不同，不能保�
 官方依据：
 - https://platform.qianwenai.com/docs/developer-guides/speech/qwen-audio-realtime
 - https://platform.qianwenai.com/docs/resources/free-quota
+
+## 2026-10-14 真实接入验证
+
+用户已确认千问权益页“免费额度用尽即停”开启，本地确认已按平台与模型保存。
+真实WebSocket鉴权、smart_turn会话配置、50轮历史配置、短句音频生成和转录成功。
+短句测试两次首音频分别约1.06秒、0.73秒，输出4.24秒PCM；该数字包含建连，不能代表实际麦克风往返延迟。
+本机输入/输出设备经真实后台引擎短时开启并停止，未发现设备错误。
+15项离线测试及界面集成通过。自动VAD打断使用服务端自动取消机制，客户端清空缓存，避免重复取消报错。
+正常启动不收音；明确使用 `python main.py --voice` 可直接开启持续通话。
+实时状态只保存到Git忽略的 `realtime_status.log`，无录音、转录或凭据。
+仍需用户试聊确认听感、收音与真实语音打断；未做数小时稳定性实测。
