@@ -23,6 +23,8 @@
     "input_device": null,
     "output_device": null,
     "free_only": true,
-    "free_quota_confirmed_model": ""
+    "free_quota_confirmed_model": "",
+    "provider": "qianwen",
+    "free_quota_confirmed_provider": ""
   }
 }

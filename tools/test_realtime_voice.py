@@ -19,8 +19,8 @@ from core.realtime_voice import DEFAULTS, PCMBuffer, RealtimeVoice, connection_u
 from ui.voice_dialog import VoiceSettingsDialog, VoiceCallDialog
 
 APP = QApplication.instance() or QApplication([])
-CFG = dict(DEFAULTS, workspace_id='test-space', api_key='test-credential', headphones=True,
-           free_quota_confirmed_model=DEFAULTS['model'])
+CFG = dict(DEFAULTS, provider='bailian', workspace_id='test-space', api_key='test-credential', headphones=True,
+           free_quota_confirmed_model=DEFAULTS['model'], free_quota_confirmed_provider='bailian')
 
 
 class Stream:
@@ -62,6 +62,36 @@ class VoiceTests(unittest.TestCase):
         for changed in [dict(workspace_id='../../evil'), dict(region='elsewhere'), dict(api_key='')]:
             with self.assertRaises(ValueError):
                 connection_url(dict(CFG, **changed))
+
+    def test_qianwen_needs_only_key_and_uses_its_own_host(self):
+        cfg = dict(CFG, provider='qianwen', workspace_id='', region='')
+        self.assertEqual(connection_url(cfg),
+                         'wss://maas.qianwenaiapi.com/api-ws/v1/realtime?model=qwen-audio-3.1-realtime-plus')
+        with self.assertRaises(ValueError):
+            connection_url(dict(cfg, api_key=''))
+
+    def test_free_quota_confirmation_cannot_cross_platforms(self):
+        engine = RealtimeVoice()
+        with patch('websocket.create_connection') as connect:
+            engine.start(dict(CFG, provider='qianwen', workspace_id=''))
+            self.assertFalse(engine.active)
+            connect.assert_not_called()
+
+    def test_qianwen_settings_hide_workspace_and_clear_key_on_platform_change(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp)/'ai_config.json'
+            cfg = dict(CFG, provider='qianwen', workspace_id='', free_quota_confirmed_provider='qianwen')
+            path.write_text(json.dumps({'realtime_voice':cfg}), encoding='utf-8')
+            with patch('ui.voice_dialog.CONFIG_PATH', path):
+                dialog = VoiceSettingsDialog()
+                self.assertTrue(dialog.workspace.isHidden())
+                self.assertTrue(dialog.region.isHidden())
+                dialog._save()
+                self.assertEqual(json.loads(path.read_text())['realtime_voice']['provider'], 'qianwen')
+                dialog.provider.setCurrentIndex(1)
+                self.assertEqual(dialog.key.text(), '')
+                self.assertFalse(dialog.free_guard.isChecked())
+                dialog.deleteLater()
 
     def test_bounded_pcm_and_zero_padding(self):
         buf = PCMBuffer(8)

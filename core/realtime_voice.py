@@ -1,4 +1,4 @@
-"""Qwen Omni realtime voice. Audio/network stay off the Qt UI thread.
+"""Qwen realtime voice. Audio/network stay off the Qt UI thread.
 
 WebSocket PCM has no acoustic echo canceller: speaker mode gates capture during
 playback; headphone mode permits server VAD interruptions. No audio is saved.
@@ -17,11 +17,11 @@ from urllib.parse import urlencode
 from PyQt5.QtCore import QObject, pyqtSignal
 
 CONFIG_PATH = Path(__file__).resolve().parents[1] / 'ai_config.json'
-DEFAULTS = dict(model='qwen-audio-3.1-realtime-plus', region='cn-beijing',
+DEFAULTS = dict(provider='qianwen', model='qwen-audio-3.1-realtime-plus', region='cn-beijing',
                 workspace_id='', api_key='', voice='longanqian_v3.1', headphones=False,
                 silence_duration_ms=1000, max_call_minutes=240,
                 idle_minutes=10, input_device=None, output_device=None,
-                free_only=True, free_quota_confirmed_model='')
+                free_only=True, free_quota_confirmed_model='', free_quota_confirmed_provider='')
 PERSONA = '''你是咕嘎，一只娇憨、调皮但体贴的小企鹅桌宠。用自然普通话与饲养员聊天，
 自称本鹅，偶尔说咕嘎。认真倾听长段表达，不催促，不把每个问题都拐到游戏。
 默认用简洁口语回答，需要讲解时可以详细展开。不要读表情标签、动作标签、竖线或Markdown。
@@ -42,18 +42,23 @@ def load_settings():
 
 
 def connection_url(cfg):
+    provider = cfg.get('provider', 'qianwen')
+    if provider not in ('qianwen', 'bailian'):
+        raise ValueError('请选择千问 AI 平台或阿里云百炼')
+    model = cfg.get('model', '')
+    if model not in ('qwen-audio-3.1-realtime-plus', 'qwen3.8-omni-flash-realtime', 'qwen3.5-omni-plus-realtime',
+                     'qwen3.5-omni-flash-realtime'):
+        raise ValueError('不支持此实时模型，请从配置列表选择')
+    if not cfg.get('api_key', '').strip():
+        raise ValueError('请填写所选平台的 API Key')
+    if provider == 'qianwen':
+        return 'wss://maas.qianwenaiapi.com/api-ws/v1/realtime?' + urlencode({'model': model})
     workspace = cfg.get('workspace_id', '').strip()
     if not re.fullmatch(r'[A-Za-z0-9_-]+', workspace):
         raise ValueError('请填写百炼业务空间 ID（不是账号 ID）')
     region = cfg.get('region', 'cn-beijing')
     if region not in ('cn-beijing', 'ap-southeast-1'):
         raise ValueError('请选择北京或新加坡地域')
-    model = cfg.get('model', '')
-    if model not in ('qwen-audio-3.1-realtime-plus', 'qwen3.8-omni-flash-realtime', 'qwen3.5-omni-plus-realtime',
-                     'qwen3.5-omni-flash-realtime'):
-        raise ValueError('不支持此实时模型，请从配置列表选择')
-    if not cfg.get('api_key', '').strip():
-        raise ValueError('请填写该地域、该业务空间的百炼 API Key')
     return f'wss://{workspace}.{region}.maas.aliyuncs.com/api-ws/v1/realtime?' + urlencode({'model': model})
 
 
@@ -147,12 +152,14 @@ class RealtimeVoice(QObject):
             self._cfg = cfg or load_settings()
             connection_url(self._cfg)
             if self._cfg.get('free_only', True):
-                if self._cfg.get('region') != 'cn-beijing':
+                if self._cfg.get('provider', 'qianwen') == 'bailian' and self._cfg.get('region') != 'cn-beijing':
                     raise ValueError('仅免费额度模式只允许北京地域')
-                if self._cfg.get('free_quota_confirmed_model') != self._cfg.get('model'):
-                    raise ValueError('尚未确认该模型已开启百炼“免费额度用完即停”，已阻止联网调用')
+                if (self._cfg.get('free_quota_confirmed_model') != self._cfg.get('model') or
+                        self._cfg.get('free_quota_confirmed_provider') != self._cfg.get('provider', 'qianwen')):
+                    raise ValueError('尚未确认所选平台该模型的“免费额度用尽即停”保护，已阻止联网调用')
             import sounddevice, websocket  # noqa: F401
         except Exception as exc:
+            self.last_error = str(exc)
             self.failed.emit(str(exc))
             return
         self._stop.clear()
@@ -265,7 +272,7 @@ class RealtimeVoice(QObject):
                 raise ValueError('免费额度已用尽或到期，已停止；不会切换模型或重试付费调用')
             if code in ('response_cancel_not_active', 'response_already_done'):
                 return
-            raise ValueError('百炼返回错误：' + str(code) + '（请核对模型权限、额度和配置）')
+            raise ValueError('语音平台返回错误：' + str(code) + '（请核对模型权限、额度和配置）')
         if kind == 'input_audio_buffer.speech_started':
             self._last_activity = time.monotonic()
             self._cancel_audio()
@@ -299,13 +306,14 @@ class RealtimeVoice(QObject):
             self._response_id = None
             result = event.get('response', {})
             if result.get('status') == 'failed':
-                raise ValueError('模型生成失败，请检查百炼额度和模型权限')
+                raise ValueError('模型生成失败，请检查所选平台的额度和模型权限')
             self.status.emit('持续通话中 · 静音、打断或结束可用')
 
     def _connection(self):
         import sounddevice as sd
         import websocket
-        self.status.emit('正在连接阿里百炼…')
+        platform = '千问 AI 平台' if self._cfg.get('provider', 'qianwen') == 'qianwen' else '阿里云百炼'
+        self.status.emit('正在连接' + platform + '…')
         ws = websocket.create_connection(connection_url(self._cfg),
                                          header=['Authorization: Bearer ' + self._cfg['api_key'].strip()], timeout=12)
         self._ws = ws
@@ -404,7 +412,7 @@ class RealtimeVoice(QObject):
                     break
                 except websocket.WebSocketBadStatusException as exc:
                     if exc.status_code in (400, 401, 403, 404, 429):
-                        self.last_error = f'百炼连接失败 HTTP {exc.status_code}，请检查地域、空间ID、Key、权限和额度'
+                        self.last_error = f'语音平台连接失败 HTTP {exc.status_code}，请检查所选平台的 Key、模型权限和额度'
                         self.failed.emit(self.last_error)
                         break
                     attempts += 1

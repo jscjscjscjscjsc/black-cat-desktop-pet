@@ -266,8 +266,8 @@ class PetWindow(QWidget):
         m.addAction("显示/隐藏").triggered.connect(
             lambda: self.hide() if self.isVisible() else (self.show(), self._force_top()))
         m.addSeparator()
-        m.addAction("🎙 持续语音对话（阿里）").triggered.connect(self._open_realtime_voice)
-        m.addAction("⚙ 阿里语音配置").triggered.connect(self._configure_realtime_voice)
+        m.addAction("🎙 持续语音对话").triggered.connect(self._open_realtime_voice)
+        m.addAction("⚙ 实时语音配置").triggered.connect(self._configure_realtime_voice)
         m.addAction("退出").triggered.connect(self._quit)
         self._tray.setContextMenu(m)
         self._tray.show()
@@ -474,8 +474,8 @@ class PetWindow(QWidget):
             for name in self._anim.sticker_names:
                 sticker_menu.addAction(name).triggered.connect(
                     lambda _, n=name: self._play_sticker_action(n))
-        menu.addAction("🎙 持续语音对话（阿里）").triggered.connect(self._open_realtime_voice)
-        menu.addAction("⚙ 阿里语音配置").triggered.connect(self._configure_realtime_voice)
+        menu.addAction("🎙 持续语音对话").triggered.connect(self._open_realtime_voice)
+        menu.addAction("⚙ 实时语音配置").triggered.connect(self._configure_realtime_voice)
         voice_item = menu.addAction("🎤 按住说话（开启：按住企鹅说话，松开发送）")
         voice_item.setCheckable(True)
         voice_item.setChecked(self._voice_mode)

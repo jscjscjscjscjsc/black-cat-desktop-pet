@@ -1,14 +1,16 @@
 # 咕嘎持续语音升级
 
-当前默认模型：`qwen-audio-3.1-realtime-plus`，北京地域，音色 `longanqian_v3.1`。
+当前默认平台：千问 AI 平台 `platform.qianwenai.com`，模型 `qwen-audio-3.1-realtime-plus`，音色 `longanqian_v3.1`。
+调用地址：`wss://maas.qianwenaiapi.com/api-ws/v1/realtime`。只需该平台的通用 API Key，无需业务空间 ID。
+配置中可另选阿里云百炼；百炼需对应地域和业务空间 ID，不能混用两个平台的 Key。
 采用官方 WebSocket PCM 协议：输入 16kHz / 输出 24kHz / 16bit / 单声道；语义轮次 `smart_turn`。
 
 ## 使用
 
-1. 在百炼免费额度页面查找**完全相同的模型ID**，确认有未过期额度，开启“免费额度用完即停”，等待设置生效。
-2. 右键企鹅或托盘 → “阿里语音配置”，填写该地域、该业务空间的 API Key 和业务空间 ID。
+1. 千问平台首页 → 查看权益，查找**完全相同的模型ID**，确认有未过期额度，并确认“免费额度用尽即停”保护。未认证账号默认强制启用；已认证账号需手动开启。
+2. 右键企鹅或托盘 → “实时语音配置”，选择“千问 AI 平台”，填写该平台 API Key；无需业务空间 ID。
 3. 已完成第1步后勾选服务端开关确认项，保存。程序的确认项不能代替百炼服务端开关。
-4. “持续语音对话（阿里）”开始通话。程序不在启动时自动开启麦克风。
+4. “持续语音对话”开始通话。程序不在启动时自动开启麦克风。
 5. 可静音、打断、结束；关闭通话窗口也会停止收音并释放设备。
 
 外放模式在AI生成/播放期间暂停输入，避免回录。耳机模式允许双向收音、语音打断；当前没有软件声学回声消除。
@@ -18,9 +20,9 @@ Qwen-Audio模型原生音频历史容量与会话持续时长不同，不能保�
 
 ## 免费额度保护
 
-- 只允许北京地域；未确认当前模型已开启服务端保护时，程序拒绝联网。
+- 未确认当前平台、当前模型已开启服务端保护时，程序拒绝联网；百炼的仅免费模式只允许北京地域。
 - 服务端返回 `AllocationQuota.FreeTierOnly` 或 HTTP 403 后结束，不重试，不转其他模型。
-- 本地不能通过语音响应准确获知账号剩余额度，因此必须依靠阿里服务端开关，不能靠估算Token防扣费。
+- 本地不能通过语音响应准确获知账号剩余额度，因此必须依靠平台服务端保护，不能靠估算Token防扣费。截图中的余额0元并不等同于用尽即停已启用。
 - Key保存在Git忽略的 `ai_config.json`；不写日志，不提交Git。
 
 ## 回滚
@@ -35,8 +37,8 @@ Qwen-Audio模型原生音频历史容量与会话持续时长不同，不能保�
 
 `python tools/test_realtime_voice.py`：离线验证停止释放设备、队列上限、外放收音抑制、取消旧音频、上下文限制、配置保存和免费额度保护。
 `python tools/smoke_voice_ui.py`：有限时间的离线桌宠与语音面板集成检查。
-真实麦克风、音质、延迟、网络重连和长时间持续通话仍需接入后实测。
+真实麦克风、音质、延迟、网络重连和长时间持续通话仍需接入后实测。千问接入地址、免业务空间ID、跨平台保护和配置界面另有离线检查。
 
 官方依据：
-- https://help.aliyun.com/zh/model-studio/qwen-audio-realtime-user-guides
-- https://help.aliyun.cn/zh/model-studio/new-free-quota
+- https://platform.qianwenai.com/docs/developer-guides/speech/qwen-audio-realtime
+- https://platform.qianwenai.com/docs/resources/free-quota

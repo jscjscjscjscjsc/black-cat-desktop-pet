@@ -25,7 +25,7 @@ with patch('core.keyboard_hook.KeyboardHook.start'), patch('ui.tts_engine.TTSEng
     panel._append('咕嘎', '咕嘎，饲养员，本鹅在听呢。')
     panel.status.setText('离线界面验证 · 麦克风未开启')
     def finish():
-        assert pet._tray.contextMenu().actions()[2].text() == '🎙 持续语音对话（阿里）'
+        assert pet._tray.contextMenu().actions()[2].text() == '🎙 持续语音对话'
         assert '连续聊' in panel.transcript.toPlainText()
         for timer in pet.findChildren(QTimer):
             timer.stop()

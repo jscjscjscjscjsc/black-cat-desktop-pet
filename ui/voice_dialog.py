@@ -11,7 +11,7 @@ from core.realtime_voice import CONFIG_PATH, DEFAULTS, connection_url
 class VoiceSettingsDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle('咕嘎 · 阿里实时语音配置')
+        self.setWindowTitle('咕嘎 · 实时语音配置')
         self.setMinimumWidth(560)
         try:
             with CONFIG_PATH.open(encoding='utf-8-sig') as f:
@@ -20,27 +20,33 @@ class VoiceSettingsDialog(QDialog):
             self._config = {}
         cfg = dict(DEFAULTS, **self._config.get('realtime_voice', {}))
         layout = QVBoxLayout(self)
-        note = QLabel('选择阿里云百炼 → 北京地域 → 业务空间。\nKey只保存到本机 ai_config.json，已由Git忽略。')
+        note = QLabel('千问 AI 平台只需 API Key，无需业务空间 ID。\nKey只保存到本机 ai_config.json，已由Git忽略。')
         note.setWordWrap(True)
         layout.addWidget(note)
-        link = QLabel('<a href="https://bailian.console.aliyun.com/">打开百炼控制台登录</a> · '
-                      '<a href="https://help.aliyun.com/zh/model-studio/realtime">官方模型说明</a>')
-        link.setOpenExternalLinks(True)
-        layout.addWidget(link)
+        self.link = QLabel()
+        self.link.setOpenExternalLinks(True)
+        layout.addWidget(self.link)
         form = QFormLayout()
         layout.addLayout(form)
+        self.provider = QComboBox()
+        self.provider.addItem('千问 AI 平台（platform.qianwenai.com）', 'qianwen')
+        self.provider.addItem('阿里云百炼', 'bailian')
+        self.provider.setCurrentIndex(max(0, self.provider.findData(cfg.get('provider', 'qianwen'))))
+        form.addRow('API 平台', self.provider)
         self.key = QLineEdit(cfg.get('api_key', ''))
         self.key.setEchoMode(QLineEdit.Password)
-        self.key.setPlaceholderText('百炼 API Key；也可用 DASHSCOPE_API_KEY 环境变量')
+        self.key.setPlaceholderText('所选平台的 API Key；也可用 DASHSCOPE_API_KEY 环境变量')
         form.addRow('API Key', self.key)
         self.workspace = QLineEdit(cfg.get('workspace_id', ''))
         self.workspace.setPlaceholderText('该Key所属的业务空间ID')
-        form.addRow('业务空间 ID', self.workspace)
+        self.workspace_label = QLabel('业务空间 ID')
+        form.addRow(self.workspace_label, self.workspace)
         self.region = QComboBox()
         self.region.addItem('北京（中国内地）', 'cn-beijing')
         self.region.addItem('新加坡', 'ap-southeast-1')
         self.region.setCurrentIndex(max(0, self.region.findData(cfg.get('region'))))
-        form.addRow('地域', self.region)
+        self.region_label = QLabel('地域')
+        form.addRow(self.region_label, self.region)
         self.model = QComboBox()
         self.model.addItems(['qwen-audio-3.1-realtime-plus', 'qwen3.8-omni-flash-realtime', 'qwen3.5-omni-plus-realtime',
                              'qwen3.5-omni-flash-realtime'])
@@ -51,13 +57,14 @@ class VoiceSettingsDialog(QDialog):
         self.voice.addItems(['longanqian_v3.1', 'Tina', 'Cici', 'Momo', 'Serena', 'Ethan'])
         self.voice.setCurrentText(cfg['voice'])
         form.addRow('音色', self.voice)
-        self.free_guard = QCheckBox('已在百炼为当前模型开启“免费额度用完即停”')
-        self.free_guard.setChecked(cfg.get('free_quota_confirmed_model') == cfg['model'])
+        self.free_guard = QCheckBox('已确认当前平台、当前模型有“免费额度用尽即停”保护')
+        self.free_guard.setChecked(cfg.get('free_quota_confirmed_model') == cfg['model'] and
+                                   cfg.get('free_quota_confirmed_provider') == self.provider.currentData())
         form.addRow('只用赠送额度', self.free_guard)
         self.model.currentTextChanged.connect(lambda _: self.free_guard.setChecked(False))
         self.model.currentTextChanged.connect(lambda model: self.voice.setCurrentText(
             'longanqian_v3.1' if model.startswith('qwen-audio-') else 'Tina'))
-        quota_note = QLabel('未勾选也可保存配置，但程序会阻止联网。必须先开启阿里服务端开关。\n免费额度耗尽或到期后停止，不自动换模型。')
+        quota_note = QLabel('千问首页 → 查看权益 → 当前模型 → 免费额度用尽即停。\n未认证账号默认启用；已认证账号需手动开启。未确认时阻止联网。')
         quota_note.setWordWrap(True)
         layout.addWidget(quota_note)
         self.headphones = QCheckBox('使用耳机：允许边听边说和语音打断')
@@ -101,15 +108,34 @@ class VoiceSettingsDialog(QDialog):
         buttons.accepted.connect(self._save)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
+        self.provider.currentIndexChanged.connect(self._provider_changed)
+        self._update_provider_fields()
+
+    def _provider_changed(self):
+        self.free_guard.setChecked(False)
+        # A key from one platform must never be sent to another by switching UI.
+        self.key.clear()
+        self._update_provider_fields()
+
+    def _update_provider_fields(self):
+        bailian = self.provider.currentData() == 'bailian'
+        for field in (self.workspace, self.workspace_label, self.region, self.region_label):
+            field.setVisible(bailian)
+        if bailian:
+            self.link.setText('<a href="https://bailian.console.aliyun.com/">百炼控制台</a>')
+        else:
+            self.link.setText('<a href="https://platform.qianwenai.com/">千问 AI 平台</a> · '
+                              '<a href="https://platform.qianwenai.com/docs/resources/free-quota">免费额度说明</a>')
 
     def _save(self):
-        cfg = dict(DEFAULTS, api_key=self.key.text().strip(), workspace_id=self.workspace.text().strip(),
+        cfg = dict(DEFAULTS, provider=self.provider.currentData(), api_key=self.key.text().strip(), workspace_id=self.workspace.text().strip(),
                    region=self.region.currentData(), model=self.model.currentText(),
                    voice=self.voice.currentText().strip(), headphones=self.headphones.isChecked(),
                    silence_duration_ms=self.silence.value(), max_call_minutes=self.duration.value(),
                    idle_minutes=self.idle.value(), input_device=self.input_device.currentData(),
                    output_device=self.output_device.currentData(), free_only=True,
-                   free_quota_confirmed_model=self.model.currentText() if self.free_guard.isChecked() else '')
+                   free_quota_confirmed_model=self.model.currentText() if self.free_guard.isChecked() else '',
+                   free_quota_confirmed_provider=self.provider.currentData() if self.free_guard.isChecked() else '')
         try:
             checked = dict(cfg)
             checked['api_key'] = checked['api_key'] or os.getenv('DASHSCOPE_API_KEY', '')
@@ -146,7 +172,7 @@ class VoiceCallDialog(QDialog):
         self.transcript.setReadOnly(True)
         self.transcript.document().setMaximumBlockCount(300)
         layout.addWidget(self.transcript)
-        note = QLabel('通话开启时麦克风音频会发往阿里百炼，并按其API计费。\n关闭窗口即结束通话；不保存录音或对话到磁盘。')
+        note = QLabel('通话开启时麦克风音频会发往配置中选择的语音平台。\n仅使用免费额度；关闭窗口结束通话，不保存录音或对话到磁盘。')
         note.setWordWrap(True)
         layout.addWidget(note)
         row = QHBoxLayout()
