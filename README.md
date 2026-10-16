@@ -135,9 +135,9 @@ guga-penguin-pet/
 
 - Python 3.12
 - PyQt5（QMediaPlayer/QTimer/pyqtSignal/eventFilter）
-- DeepSeek API（对话）
+- 兼容 Chat Completions 的对话 API（实际平台与模型由本地 `ai_config.json` 的 `base_url` / `model` 决定）
 - 智谱 GLM-4.6V（视觉）
-- edge-tts（软萌语音）
+- edge-tts >= 7.3.0（软萌语音；修复旧版请求被微软服务以 403 拒绝的问题）
 - 豆包语音 V3（TTS 兜底）
 
 ## License
@@ -150,3 +150,11 @@ MIT
 默认接入 `qwen-audio-3.1-realtime-plus`（千问 AI 平台，无需业务空间 ID），支持持续收音、流式播放、静音、耳机语音打断和断线续接。
 仅使用赠送额度：先在千问 AI 平台权益页面为同名模型确认“免费额度用尽即停”保护；未确认时程序阻止联网，额度耗尽后停止。
 详细设置、当前限制与回滚方法见 [持续语音使用说明](docs/realtime-voice.md)。
+
+## 普通 Edge 语音排查
+
+普通聊天的朗读仍使用 `zh-CN-XiaoyiNeural`，语速 `+15%`、音调 `+14Hz`；助教模式语速为 `+5%`。千问实时音频仅在主动开启持续语音通话时使用。
+
+2026-10-16 已复现旧版 `edge-tts 7.2.8` 合成时返回 HTTP 403；升级到 `7.3.0` 后合成与 Qt 播放通过。上游修复记录见 [edge-tts #490](https://github.com/rany2/edge-tts/issues/490)。升级依赖后需退出并重新启动桌宠，运行中的 Python 进程会保留已导入的旧版本。
+
+使用桌宠的 Python 运行 `python tools/diag_tts.py` 可验证 Edge 合成及 Qt 播放。该诊断会朗读一句通用测试语，最多运行 30 秒，不使用豆包兜底或麦克风；成功返回 `ok: true`。播放状态通过后，最终听感仍取决于 Windows 输出设备及音量。
