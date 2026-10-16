@@ -14,6 +14,7 @@ def main():
     parser.add_argument("--model", action="store_true", help="Call existing configured model")
     parser.add_argument("--log-check", action="store_true", help="Diagnose legacy log data completeness")
     parser.add_argument("--ui", action="store_true", help="Open the standalone decision panel")
+    parser.add_argument("--tag-observation", action="store_true", help="Normalize an explicit entity-tag snapshot")
     args = parser.parse_args()
     if args.ui:
         from launcher import _prepare_qt
@@ -32,6 +33,9 @@ def main():
         if path.stat().st_size > 100000:
             raise SnapshotError("文件超过 100 KB")
         snapshot = json.loads(path.read_text(encoding="utf-8-sig"))
+        if args.tag_observation:
+            from core.bg_observation import normalize_tag_observation
+            snapshot = normalize_tag_observation(snapshot)
         result = DecisionEngine(load_config() if args.model else {}).decide(snapshot, args.model)
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return 2 if result["status"] == "blocked" else 0

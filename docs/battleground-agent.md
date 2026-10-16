@@ -55,6 +55,8 @@ python tools/bg_agent.py --ui
 
 下一阶段需要独立观测适配器：将日志/视觉中的可见信息合并，标注来源与未知字段，并核对当前剩余血量和可用金币（不能直接把最大资源当余额）。不应把战斗中的临时状态当成招募局面。
 
+现新增 `core/bg_observation.py` 作为纯数据转换起点。导入面板可识别含 `entities` 的显式标签快照，CLI 可加 `--tag-observation`。它不读取真实日志或进程，不猜测阶段和身份：调用方须提供本地/商店控制器、英雄/玩家实体 ID、阶段、版本和有效费用。金币由 `RESOURCES + TEMP_RESOURCES - RESOURCES_USED` 计算，血量由 `HEALTH - DAMAGE` 计算；缺标签保留未知，商店买价不会从普通 `COST` 字段推断。示例测试使用匿名合成标签，实服标签语义尚需独立对照确认。
+
 ## 社区研究怎样落到代码
 
 | 来源 | 借鉴的设计 | 本项目采取的实现 |
@@ -77,6 +79,7 @@ python tools/bg_agent.py --ui
 
 ```powershell
 python tools/test_bg_agent.py
+python tools/test_bg_observation.py
 python tools/smoke_bg_agent.py
 ```
 

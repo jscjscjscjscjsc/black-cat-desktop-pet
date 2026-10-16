@@ -151,7 +151,12 @@ class BattlegroundAgentPanel(QDialog):
             if Path(path).stat().st_size > 100000:
                 raise ValueError("文件超过 100 KB")
             text = Path(path).read_text(encoding="utf-8-sig")
-            validate_snapshot(json.loads(text))
+            raw = json.loads(text)
+            if isinstance(raw, dict) and "entities" in raw and "schema_version" not in raw:
+                from core.bg_observation import normalize_tag_observation
+                raw = normalize_tag_observation(raw)
+                text = json.dumps(raw, ensure_ascii=False, indent=2)
+            validate_snapshot(raw)
             self.input.setPlainText(text)
         except (OSError, ValueError) as exc:
             self.status.setText("导入失败：" + str(exc)[:160])
