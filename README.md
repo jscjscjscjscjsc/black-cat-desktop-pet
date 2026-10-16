@@ -158,3 +158,9 @@ MIT
 2026-10-16 已复现旧版 `edge-tts 7.2.8` 合成时返回 HTTP 403；升级到 `7.3.0` 后合成与 Qt 播放通过。上游修复记录见 [edge-tts #490](https://github.com/rany2/edge-tts/issues/490)。升级依赖后需退出并重新启动桌宠，运行中的 Python 进程会保留已导入的旧版本。
 
 使用桌宠的 Python 运行 `python tools/diag_tts.py` 可验证 Edge 合成及 Qt 播放。该诊断会朗读一句通用测试语，最多运行 30 秒，不使用豆包兜底或麦克风；成功返回 `ok: true`。播放状态通过后，最终听感仍取决于 Windows 输出设备及音量。
+
+## OpenCode Go 普通聊天
+
+本地配置可将 `base_url` 设为 `https://opencode.ai/inference/go/openai/v1`，`model` 设为 `deepseek-v4.1-flash`，API Key 仅保存在 Git 忽略的 `ai_config.json` 中。此调用消耗 Go 套餐额度；普通 Edge 朗读、视觉分析和千问持续通话仍使用各自配置。
+
+聊天引擎为 Go 请求附带自身客户端标识和会话 ID，多轮对话复用 ID，清空历史时更新；不需要本地 CLI 转发或代理。配置更新后需重启桌宠。`python tools/test_ai_go.py` 提供不联网的会话路由检查。

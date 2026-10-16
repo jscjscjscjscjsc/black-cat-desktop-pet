@@ -13,6 +13,8 @@ import json
 import os
 import threading
 import time
+import uuid
+from urllib.parse import urlsplit
 
 import requests
 from PyQt5.QtCore import QObject, pyqtSignal
@@ -99,7 +101,8 @@ OUTLOOK_OVERRIDE = """你是"咕嘎"——一只住在冰面上的娇憨调皮�
 class AIChatWorker(threading.Thread):
     """单次 DS API 请求（后台线程）"""
 
-    def __init__(self, cfg, system_prompt, history, user_msg, rag_context, result_cb):
+    def __init__(self, cfg, system_prompt, history, user_msg, rag_context, result_cb,
+                 session_id=None):
         super().__init__(daemon=True)
         self._cfg = cfg
         self._system_prompt = system_prompt
@@ -107,6 +110,7 @@ class AIChatWorker(threading.Thread):
         self._user_msg = user_msg
         self._rag_context = rag_context
         self._result_cb = result_cb
+        self._session_id = session_id or str(uuid.uuid4())
 
     def run(self):
         # 思考型模型可能把配额全花在 reasoning 上导致 content 为空 → 空回复自动重试
@@ -121,12 +125,20 @@ class AIChatWorker(threading.Thread):
                 messages.extend(self._history)
                 messages.append({"role": "user", "content": self._user_msg})
 
+                base_url = self._cfg.get("base_url", "https://api.deepseek.com").rstrip('/')
+                headers = {
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {self._cfg.get('api_key', '')}",
+                }
+                endpoint = urlsplit(base_url)
+                if endpoint.hostname == 'opencode.ai' and endpoint.path.startswith(
+                        ('/inference/go/', '/zen/go/')):
+                    # Go needs a client identity and a stable ID across conversation turns.
+                    headers['User-Agent'] = 'GugaDesktopPet/1.0'
+                    headers['x-opencode-session'] = self._session_id
                 resp = requests.post(
-                    self._cfg.get("base_url", "https://api.deepseek.com") + "/chat/completions",
-                    headers={
-                        "Content-Type": "application/json",
-                        "Authorization": f"Bearer {self._cfg.get('api_key', '')}",
-                    },
+                    base_url + "/chat/completions",
+                    headers=headers,
                     json={
                         "model": self._cfg.get("model", "deepseek-v4-flash"),
                         "messages": messages,
@@ -172,6 +184,7 @@ class AIChatEngine(QObject):
         super().__init__(parent)
         self._cfg = self._load_config()
         self._history = []
+        self._session_id = str(uuid.uuid4())
         self._worker = None
         self._pending_msg = None
         self._last_user_msg = ""
@@ -194,6 +207,7 @@ class AIChatEngine(QObject):
 
     def reset_history(self):
         self._history.clear()
+        self._session_id = str(uuid.uuid4())
 
     def ask(self, user_msg: str, rag_query: str = None, system_override: str = None):
         if not self.enabled:
@@ -209,7 +223,8 @@ class AIChatEngine(QObject):
         prompt = system_override or SYSTEM_PROMPT
         history = self._history[-self._cfg.get('max_history', 8) * 2:]
         self._last_user_msg = user_msg
-        self._worker = AIChatWorker(self._cfg, prompt, history, user_msg, rag_context, self._on_result)
+        self._worker = AIChatWorker(self._cfg, prompt, history, user_msg, rag_context,
+                                   self._on_result, self._session_id)
         self._worker.start()
 
     def _on_result(self, ok: bool, text: str = "", error: str = ""):
