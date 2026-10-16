@@ -1,0 +1,53 @@
+"""Run bounded offline eight-player battles, optionally with a local checkpoint."""
+import argparse
+import os
+from pathlib import Path
+import subprocess
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from core.bg_selfplay import Arena, load_engine, save_json, teacher_policy
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--engine", required=True)
+    parser.add_argument("--checkpoint")
+    parser.add_argument("--games", type=int, default=1)
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--output", required=True)
+    parser.add_argument("--worker", action="store_true", help=argparse.SUPPRESS)
+    args = parser.parse_args()
+    if not 1 <= args.games <= 100:
+        parser.error("games must be between 1 and 100")
+    if not args.worker:
+        try:
+            worker_env = os.environ.copy()
+            worker_env["PYTHONHASHSEED"] = str(args.seed % (2**32))
+            return subprocess.run([sys.executable, *sys.argv, "--worker"],
+                                  timeout=min(7200, args.games*120+15), env=worker_env).returncode
+        except subprocess.TimeoutExpired:
+            print("Offline battle worker terminated at wall-time budget", file=sys.stderr)
+            return 124
+    output = Path(args.output)
+    if output.exists():
+        raise FileExistsError("Choose a new output file; existing battles are not overwritten")
+    arena = Arena(load_engine(args.engine))
+    policy = teacher_policy
+    if args.checkpoint:
+        import torch
+        from core.bg_policy import LabPolicy
+        torch.set_num_threads(2)
+        policy = LabPolicy.load(args.checkpoint).choose
+    results = []
+    for i in range(args.games):
+        r = arena.run([policy]*8, args.seed+i, collect=True)
+        results.append(r)
+        save_json(output, dict(checkpoint=args.checkpoint, games=results))
+        print(f"seed={r['seed']} finished={r['finished']} turns={r['combat_phases']} "
+              f"placements={r['placements']} action_limit_hits={r['action_limit_hits']}", flush=True)
+    return 0 if all(r["finished"] and not r["action_limit_hits"] for r in results) else 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())
