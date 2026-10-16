@@ -268,6 +268,7 @@ class PetWindow(QWidget):
         m.addSeparator()
         m.addAction("🎙 持续语音对话").triggered.connect(self._open_realtime_voice)
         m.addAction("⚙ 实时语音配置").triggered.connect(self._configure_realtime_voice)
+        m.addAction("♟ 战棋决策实验室").triggered.connect(self._open_bg_agent)
         m.addAction("退出").triggered.connect(self._quit)
         self._tray.setContextMenu(m)
         self._tray.show()
@@ -484,6 +485,7 @@ class PetWindow(QWidget):
         menu.addAction("🔧 拔线自检（写 netcut_selftest.log）").triggered.connect(self._netcut_selftest)
         menu.addAction("💬 打字对话").triggered.connect(lambda: self._open_input('chat'))
         menu.addAction("🎮 分析对局（看屏幕）").triggered.connect(self._see_board)
+        menu.addAction("♟ 战棋决策实验室（算法 + 模型）").triggered.connect(self._open_bg_agent)
         menu.addAction("📊 读内存看分数（即时）").triggered.connect(self._show_bg_ratings)
         hover_item = menu.addAction("🔍 悬停查分（开启后悬停玩家显示分数）")
         hover_item.setCheckable(True)
@@ -1472,6 +1474,16 @@ class PetWindow(QWidget):
                 lines.append(f"{i+1}.{name}{me_tag}=未上榜")
         text = " | ".join(lines)
         self._say_with_expression(text, "normal", "point")
+
+    def _open_bg_agent(self):
+        from ui.bg_agent_panel import BattlegroundAgentPanel
+        if not getattr(self, '_bg_agent_panel', None):
+            self._bg_agent_panel = BattlegroundAgentPanel(self)
+            self._bg_agent_panel.speak_requested.connect(
+                lambda text: self._say_with_expression(text, "normal", "point"))
+        self._bg_agent_panel.show()
+        self._bg_agent_panel.raise_()
+        self._bg_agent_panel.activateWindow()
 
     def _see_board(self):
         """① power.log 日志解析（零API零429，最精确）② 失败才走 GLM 视觉"""

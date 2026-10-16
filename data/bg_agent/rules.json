@@ -1,0 +1,14 @@
+{
+  "revision": "2026-10-16-community-review-1",
+  "checked_on": "2026-10-16",
+  "coverage": "Verified patch facts for model context only; not a complete rules engine or card-pool certification.",
+  "client_patch_reference": "37.0",
+  "battlegrounds_balance_reference": "36.6.3",
+  "facts": [
+    {"claim": "36.6.3 将 Deity 的召唤条件调整为每场战斗四次友方 Aberration 死亡。", "source": "https://hearthstone.blizzard.com/en-us/news/24303864/36-6-3-patch-notes"},
+    {"claim": "36.6.3 取消 Aberration 必定出现在每个大厅的安排。", "source": "https://hearthstone.blizzard.com/en-us/news/24303864/36-6-3-patch-notes"},
+    {"claim": "36.6 的介绍说明加入 Aberration 时娜迦暂时轮换；后续是否回归应继续核对补丁。", "source": "https://hearthstone.blizzard.com/en-us/news/24294373"}
+  ],
+  "engine_profile": "vanilla-recruit-v1",
+  "engine_limits": ["No full combat simulation", "No triggered-effect resolution", "No spell or hero-power actions", "No automatic triple/discover simulation", "No client input executor"]
+}
