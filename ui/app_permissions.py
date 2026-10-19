@@ -1,6 +1,6 @@
 """Explicit application launch grants, editable by the human only."""
 from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QLabel, QListWidget, QPushButton,
-    QHBoxLayout, QFileDialog, QInputDialog)
+    QHBoxLayout, QFileDialog, QInputDialog, QCheckBox)
 
 
 class AppPermissionsDialog(QDialog):
@@ -10,9 +10,13 @@ class AppPermissionsDialog(QDialog):
         self.setWindowTitle('咕嘎 · 软件权限')
         self.resize(560, 390)
         layout = QVBoxLayout(self)
-        label = QLabel('你在这里添加的软件，咕嘎可以在文字或长语音对话中直接打开。\n软件内部任务由该软件的 MCP 接口另行授权。')
+        label = QLabel('完整访问：发现和打开本机软件、读写文件、执行限时命令，并通过已配置的 MCP 执行软件任务。\n实际系统权限继承咕嘎进程。关闭后仅能启动下方手动添加的软件。')
         label.setWordWrap(True)
         layout.addWidget(label)
+        self.full_access=QCheckBox('允许咕嘎完整访问本机（包含修改自身源码）')
+        self.full_access.setChecked(self.apps.access.enabled)
+        self.full_access.toggled.connect(self.apps.access.set_enabled)
+        layout.addWidget(self.full_access)
         self.list = QListWidget()
         layout.addWidget(self.list, 1)
         self.hint = QLabel('只授权你信任的软件或快捷方式。')

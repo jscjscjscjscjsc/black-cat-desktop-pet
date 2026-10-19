@@ -28,6 +28,7 @@ DELEGATE_INSTRUCTIONS = '''
 class AgentRealtimeVoice(RealtimeVoice):
     task_requested = pyqtSignal(str, str)
     tasks_cancelled = pyqtSignal()
+    preview = pyqtSignal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -42,6 +43,8 @@ class AgentRealtimeVoice(RealtimeVoice):
         self._user_speaking = False
         self._notice_epoch = 0
         self._notice_responses = deque(maxlen=64)
+        self._preview_text = ''
+        self._preview_channel = None
 
     def notify_battleground(self, event_id, speech):
         """Queue narration in the existing call, never open another speech connection."""
@@ -170,6 +173,16 @@ class AgentRealtimeVoice(RealtimeVoice):
     def _handle_event(self, event):
         kind = event.get('type')
         response_id = event.get('response_id') or event.get('response', {}).get('id')
+        if kind in ('response.created','input_audio_buffer.speech_started'):
+            self._preview_text = ''
+            self._preview_channel = None
+        if kind in ('response.audio_transcript.delta','response.text.delta') and response_id not in self._cancelled and not self._suppress:
+            if self._preview_channel is None:
+                self._preview_channel = kind
+            if kind == self._preview_channel:
+                self._preview_text = (self._preview_text+str(event.get('delta','')))[:8000]
+                if self._preview_text:
+                    self.preview.emit(self._preview_text)
         if kind in ('response.audio_transcript.done', 'response.text.done'):
             text = event.get('transcript') or event.get('text', '')
             key = (response_id, event.get('item_id'), text)

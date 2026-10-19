@@ -151,6 +151,10 @@ class PetWindow(QWidget):
         self._bubble_timer.timeout.connect(self._hide_bubble)
         self._chat_panel = None
         self._agent_panel = None
+        from ui.speech_bubble import PetSpeechBubble
+        self._agent_bubble = PetSpeechBubble(self)
+        self._agent_bubble.clicked.connect(self._open_bubble_chat)
+        self._agent_bubble.end_call.connect(self._end_agent_voice)
         self._chat_view = None
         self._chat_history = []
         self._input_mode = "chat"
@@ -566,8 +570,32 @@ class PetWindow(QWidget):
         self._agent_panel.activateWindow()
 
     def _open_agent_voice(self):
+        panel = self._ensure_agent_panel()
+        panel.voice_button.setChecked(True)
+        if panel.voice_active:
+            panel.hide_to_pet()
+        else:
+            self._open_agent_chat()
+
+    def _end_agent_voice(self):
+        if self._agent_panel:
+            self._agent_panel.voice_button.setChecked(False)
+
+    def _open_bubble_chat(self):
+        panel = self._ensure_agent_panel()
+        ident = self._agent_bubble.conversation_id
+        if ident and ident != panel.active_id and not (panel.busy or panel.voice_active):
+            try:
+                panel.open_conversation(ident)
+            except ValueError:
+                pass
         self._open_agent_chat()
-        self._agent_panel.voice_button.setChecked(True)
+
+    def _show_agent_bubble(self, text, conversation_id=None):
+        self._bubble_text = ''
+        self._bubble_timer.stop()
+        self._agent_bubble.show_text(text,conversation_id)
+        self.update()
 
     def _on_ai_reply(self, text, expression, action):
         self._say_with_expression(text, expression, action)
@@ -973,6 +1001,7 @@ class PetWindow(QWidget):
             pass
 
     def _on_realtime_speaking(self, on):
+        self._agent_bubble.set_speaking(on)
         if on:
             self._on_tts_started('')
         else:
@@ -1729,6 +1758,7 @@ class PetWindow(QWidget):
         self._config.save_status(s["hunger"], s["happy"], s["energy"])
 
     def _quit(self):
+        self._agent_bubble.hide()
         self._self_mcp.close()
         if self._agent_panel:
             self._agent_panel.shutdown()

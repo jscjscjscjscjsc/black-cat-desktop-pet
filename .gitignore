@@ -51,5 +51,7 @@ ai_config.json.tmp
 # Local gameplay audit (no credentials)
 runtime/bg-live/
 runtime/bg-lab/
+runtime/self-updates/
+runtime/agent-jobs/
 runtime/chat/
 mcp_servers.json

@@ -122,6 +122,10 @@ class AgentChatWindow(QDialog):
         self.pin.setChecked(True)
         self.pin.toggled.connect(self._pin)
         header.addWidget(self.pin)
+        self.hide_button = QPushButton('收起到咕嘎')
+        self.hide_button.setToolTip('隐藏对话窗，保留通话和后台任务；点击咕嘎气泡可展开')
+        self.hide_button.clicked.connect(self.hide_to_pet)
+        header.addWidget(self.hide_button)
         self.close_button = QPushButton('关闭')
         self.close_button.setObjectName('CloseChat')
         self.close_button.setToolTip('关闭对话窗并结束语音；桌宠继续运行')
@@ -188,6 +192,10 @@ class AgentChatWindow(QDialog):
     def _pin(self, enabled):
         self.setWindowFlag(Qt.WindowStaysOnTopHint, enabled)
         self.show()
+
+    def hide_to_pet(self):
+        self.hide()
+        self.pet._show_agent_bubble('我在听，可以继续说。' if self.voice_active else '点击这里，继续我们的对话。',self.active_id)
 
     def refresh_tree(self):
         self.tree.clear()
@@ -407,6 +415,8 @@ class AgentChatWindow(QDialog):
                 answer=result.get('text', '') if result['ok'] else '', error=result.get('error', '')))
         if result['ok']:
             self.store.append(ident, 'assistant', result['text'])
+            if not self.voice_active and not self.isVisible():
+                self.pet._show_agent_bubble(result['text'],ident)
             self.status.setText('●  就绪')
             if self.read_aloud.isChecked() and not self.voice_active:
                 self.pet._say_with_expression(result['text'], result['expression'], result['action'])
@@ -459,6 +469,7 @@ class AgentChatWindow(QDialog):
             self.voice.task_requested.connect(self._voice_request)
             self.voice.tasks_cancelled.connect(self._voice_cancelled)
             self.voice.transcript.connect(self._voice_transcript)
+            self.voice.preview.connect(self._voice_preview)
             self.voice.status.connect(self.status.setText)
             self.voice.failed.connect(self._voice_error)
             self.voice.finished.connect(self._voice_finished)
@@ -475,6 +486,7 @@ class AgentChatWindow(QDialog):
             self.interrupt_button.setEnabled(True)
             self.read_aloud.setEnabled(False)
             self.voice_button.setText('■  结束语音')
+            self.pet._agent_bubble.set_call_active(True,self.active_id)
             self.voice.start(cfg)
         else:
             self.voice_active = False
@@ -489,10 +501,12 @@ class AgentChatWindow(QDialog):
             self.interrupt_button.setEnabled(False)
             self.read_aloud.setEnabled(True)
             self.voice_button.setText('语音对话')
+            self.pet._agent_bubble.set_call_active(False,self.active_id)
 
     def _voice_error(self, message):
         self.voice_button.setChecked(False)
         self.status.setText(message)
+        self.pet._show_agent_bubble(message,self.active_id)
 
     def open_voice_settings(self):
         from ui.voice_dialog import VoiceSettingsDialog
@@ -516,6 +530,10 @@ class AgentChatWindow(QDialog):
             self._voice_task = None
             self.agent.cancel()
 
+    def _voice_preview(self, text):
+        if self.voice_active and self.sender() is self.voice:
+            self.pet._show_agent_bubble(text,self.active_id)
+
     def _voice_transcript(self, who, text):
         if not self.voice_active or self.sender() is not self.voice:
             return
@@ -527,6 +545,8 @@ class AgentChatWindow(QDialog):
                 self.refresh_tree()
         elif not self._voice_readback:
             self.store.append(self.active_id, 'assistant', text)
+        if who != '饲养员':
+            self.pet._show_agent_bubble(text,self.active_id)
         self.render()
 
     def _voice_finished(self):

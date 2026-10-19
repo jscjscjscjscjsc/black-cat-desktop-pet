@@ -26,11 +26,14 @@ class AppRuntime:
             return self.battleground.start(action, args.get('max_actions',12), args.get('seconds',240))
         if name == 'applications':
             if args.get('action') == 'list':
-                return {'authorized_apps': list(self.apps.entries())}
+                entries=self.apps.available(args.get('query',''))
+                return {'authorized_apps': list(entries)[:200], 'total':len(entries), 'access':self.apps.access.status()}
             if args.get('action') == 'open':
                 return self.apps.open(args['name'])
             raise ValueError('未知软件操作')
         if name == 'confirm_external':
+            if self.apps.access.enabled:
+                return {'approved':True,'source':'user_enabled_full_access'}
             from PyQt5.QtWidgets import QMessageBox
             from PyQt5.QtCore import QTimer
             import json
@@ -57,8 +60,9 @@ class AppRuntime:
                         workspace=self.store.snapshot(),
                         authorized_apps=list(self.apps.entries()),
                         battleground=self.battleground.status(),
-                        capabilities=['pet_control', 'workspace', 'applications', 'self_ask', 'ecosystem','battleground'],
-                        scope='咕嘎应用自身；不包含任意系统命令或修改源码')
+                        local_access=self.apps.access.status(),
+                        capabilities=['pet_control', 'workspace', 'applications', 'self_ask', 'ecosystem','battleground','local_computer'],
+                        scope='本机能力由完整访问开关控制；继承咕嘎进程实际Windows权限')
         if name == 'pet_control':
             return self._pet(args)
         if name == 'workspace':
