@@ -16,10 +16,13 @@ def main():
     parser.add_argument("--games", type=int, default=1)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--output", required=True)
+    parser.add_argument('--cloud-calls',type=int,default=0,help='Explicit DeepSeek request budget, 0..64; consumes existing plan quota')
     parser.add_argument("--worker", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
     if not 1 <= args.games <= 100:
         parser.error("games must be between 1 and 100")
+    if not 0 <= args.cloud_calls <= 64 or (args.cloud_calls and args.checkpoint):
+        parser.error('cloud-calls must be 0..64 and cannot combine with checkpoint')
     if not args.worker:
         try:
             worker_env = os.environ.copy()
@@ -40,10 +43,16 @@ def main():
         torch.set_num_threads(2)
         policy = LabPolicy.load(args.checkpoint).choose
     results = []
+    cloud = None
+    if args.cloud_calls:
+        from core.bg_agent import load_config
+        from core.bg_cloud_policy import CloudBudget, DeepSeekSeat
+        cloud = CloudBudget(load_config(),calls=args.cloud_calls,seconds=120)
     for i in range(args.games):
-        r = arena.run([policy]*8, args.seed+i, collect=True)
+        policies = [DeepSeekSeat(cloud,seat) for seat in range(8)] if cloud else [policy]*8
+        r = arena.run(policies, args.seed+i, collect=True)
         results.append(r)
-        save_json(output, dict(checkpoint=args.checkpoint, games=results))
+        save_json(output, dict(checkpoint=args.checkpoint, games=results,cloud=cloud.summary() if cloud else None))
         print(f"seed={r['seed']} finished={r['finished']} turns={r['combat_phases']} "
               f"placements={r['placements']} action_limit_hits={r['action_limit_hits']}", flush=True)
     return 0 if all(r["finished"] and not r["action_limit_hits"] for r in results) else 2

@@ -169,3 +169,6 @@ MIT
 本地配置可将 `base_url` 设为 `https://opencode.ai/inference/go/openai/v1`，`model` 设为 `deepseek-v4.1-flash`，API Key 仅保存在 Git 忽略的 `ai_config.json` 中。此调用消耗 Go 套餐额度；普通 Edge 朗读、视觉分析和千问持续通话仍使用各自配置。
 
 聊天引擎为 Go 请求附带自身客户端标识和会话 ID，多轮对话复用 ID，清空历史时更新；不需要本地 CLI 转发或代理。配置更新后需重启桌宠。`python tools/test_ai_go.py` 提供不联网的会话路由检查。
+# 战棋后台与语音复盘
+
+长语音和文字智能体现在可调用独立战棋后台：打开游戏、看游戏画面、只读日志、读取内存棋盘、执行一步、有限接管、查询和停止。操作完成按日志回执主动复盘；直接内存执行及当前版本完整规则仍未完成。使用方法、模拟训练结果与边界见 [战棋后台升级说明](docs/battleground-director.md)。

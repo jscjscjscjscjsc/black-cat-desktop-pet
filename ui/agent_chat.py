@@ -374,6 +374,23 @@ class AgentChatWindow(QDialog):
             self.status.setText(label + (' · 已完成' if result.get('ok') else ' · 未完成'))
             self.render()
 
+    def _battleground_event(self, event):
+        ident = event.get('conversation_id')
+        if not ident:
+            return
+        speech = event.get('speech')
+        if speech:
+            self.store.append(ident, 'system', speech)
+            if self.active_id == ident:
+                self.status.setText(speech[:100])
+                self.render()
+                if self.voice_active and self.voice:
+                    self.voice.notify_battleground(event['event_id'], speech)
+        elif event['type'] in ('action_confirmed','unconfirmed','input_sent','memory_snapshot'):
+            self.store.append(ident, 'tool', '战棋后台 · '+json.dumps(event,ensure_ascii=False)[:6000])
+            if self.active_id == ident:
+                self.render()
+
     def _completed(self, result):
         self.busy = False
         self.send_button.setEnabled(True)
@@ -404,6 +421,7 @@ class AgentChatWindow(QDialog):
             self.render()
 
     def stop_turn(self):
+        self.runtime.battleground.stop()
         self.agent.cancel()
         self.pet._tts.stop()
         if self.voice_active:
@@ -460,6 +478,7 @@ class AgentChatWindow(QDialog):
             self.voice.start(cfg)
         else:
             self.voice_active = False
+            self.runtime.battleground.stop()
             if self.voice:
                 self.voice.stop()
             self._voice_cancelled()
@@ -517,6 +536,7 @@ class AgentChatWindow(QDialog):
                 self.status.setText('通话已结束 · 阿里语音连接已关闭')
 
     def shutdown(self):
+        self.runtime.battleground.stop()
         self.agent.cancel()
         self.voice_button.setChecked(False)
 

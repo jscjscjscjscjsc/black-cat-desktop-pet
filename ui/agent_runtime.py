@@ -8,8 +8,22 @@ class AppRuntime:
         self.pet, self.panel, self.store = pet, panel, store
         from core.authorized_apps import AuthorizedApps
         self.apps = AuthorizedApps()
+        from core.bg_director import BattlegroundDirector
+        self.battleground = BattlegroundDirector(panel)
+        self.battleground.event.connect(panel._battleground_event)
 
     def execute(self, name, args):
+        if name == 'battleground':
+            action = args.get('action')
+            if action == 'status':
+                return self.battleground.status()
+            if action == 'stop':
+                return self.battleground.stop()
+            if action == 'open':
+                from core.bg_live_windows import HearthstoneWindow
+                return dict(message=HearthstoneWindow().open())
+            self.battleground.conversation_id = self.panel.active_id
+            return self.battleground.start(action, args.get('max_actions',12), args.get('seconds',240))
         if name == 'applications':
             if args.get('action') == 'list':
                 return {'authorized_apps': list(self.apps.entries())}
@@ -42,7 +56,8 @@ class AppRuntime:
                         voice_active=self.panel.voice_active,
                         workspace=self.store.snapshot(),
                         authorized_apps=list(self.apps.entries()),
-                        capabilities=['pet_control', 'workspace', 'applications', 'self_ask', 'ecosystem'],
+                        battleground=self.battleground.status(),
+                        capabilities=['pet_control', 'workspace', 'applications', 'self_ask', 'ecosystem','battleground'],
                         scope='咕嘎应用自身；不包含任意系统命令或修改源码')
         if name == 'pet_control':
             return self._pet(args)

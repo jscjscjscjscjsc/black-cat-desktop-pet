@@ -31,6 +31,7 @@ def main():
     parser.add_argument("--eval-games", type=int, default=16)
     parser.add_argument("--seed", type=int, default=1000)
     parser.add_argument("--max-seconds", type=int, default=600)
+    parser.add_argument('--expert-battles',help='Optional matching-profile DeepSeek trajectories; no extra API calls')
     parser.add_argument("--worker", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
     if not (1 <= args.bc_games <= 100 and 0 <= args.rl_games <= 1000
@@ -98,7 +99,7 @@ def main():
                    games=[], evaluations={})
     source_root = Path(__file__).resolve().parents[1]
     metrics["source_sha256"] = {}
-    for relative in ("core/bg_selfplay.py", "core/bg_policy.py", "tools/train_bg_selfplay.py"):
+    for relative in ("core/bg_selfplay.py", "core/bg_policy.py", "core/bg_expert_data.py", "tools/train_bg_selfplay.py"):
         content = (source_root / relative).read_bytes()
         snapshot = output / "source" / relative
         snapshot.parent.mkdir(parents=True, exist_ok=True)
@@ -123,6 +124,11 @@ def main():
     optimizer = torch.optim.Adam(model.parameters(), lr=0.002)
     samples = []
     try:
+        if args.expert_battles:
+            from core.bg_expert_data import load_expert_samples
+            expert_samples, expert_info = load_expert_samples(args.expert_battles)
+            samples.extend(expert_samples)
+            metrics['expert_supervision'] = expert_info
         for i in range(args.bc_games):
             r = run([teacher_policy] * 8, args.seed + i, "imitation", True)
             samples += [s for t in r["trajectories"] for s in t]

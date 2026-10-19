@@ -227,12 +227,15 @@ class Arena:
                     actions = self.actions(game, hero)
                     rows = self.features(game, hero, actions)
                     teacher = self.heuristic(game, hero, actions)
-                    selected = policies[seat](rows, teacher)
+                    policy = policies[seat]
+                    selected = (policy.choose_context(game, hero, actions, rows, teacher)
+                                if hasattr(policy, 'choose_context') else policy(rows, teacher))
                     if not isinstance(selected, int) or not 0 <= selected < len(actions):
                         raise ValueError("Policy returned invalid candidate index")
                     if collect:
                         trajectories[seat].append(dict(x=rows, action=selected, teacher=teacher,
-                                                       turn=game.turn, kind=actions[selected].kind))
+                                                       turn=game.turn, kind=actions[selected].kind,
+                                                       decision=dict(getattr(policy,'last_decision',{}))))
                     action = actions[selected]
                     self.execute(game, hero, action)
                     if action.kind == "END":
