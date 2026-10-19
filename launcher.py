@@ -110,7 +110,8 @@ def main():
             if not ctypes.windll.shell32.IsUserAnAdmin():
                 ret = ctypes.windll.shell32.ShellExecuteW(
                     None, 'runas', sys.executable,
-                    f'"{os.path.join(ROOT, "launcher.py")}"', ROOT, 1)
+                    __import__('subprocess').list2cmdline([os.path.join(ROOT, 'launcher.py')]+
+                        [arg for arg in sys.argv[1:] if arg in ('--voice','--bg-live')]), ROOT, 1)
                 # ShellExecuteW 返回 > 32 表示成功; <= 32 表示失败(用户拒绝UAC等)
                 if ret and ret > 32:
                     sys.exit(0)  # 新提权进程已启动, 当前进程退出

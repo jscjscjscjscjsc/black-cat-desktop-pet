@@ -10,8 +10,7 @@ fltmc >nul 2>&1 || (
 )
 
 cd /d "%~dp0"
-rem --- kill stale pythonw (old pet instances) ---
-taskkill /F /IM pythonw.exe >nul 2>&1
+rem Existing apps are left running; close an old pet through its tray if needed.
 
 rem ----- find python: python / py / full paths (must actually RUN, ignore Store alias) -----
 set "PYTHON="

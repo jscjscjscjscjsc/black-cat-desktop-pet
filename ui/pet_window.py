@@ -269,6 +269,7 @@ class PetWindow(QWidget):
         m.addAction("🎙 持续语音对话").triggered.connect(self._open_realtime_voice)
         m.addAction("⚙ 实时语音配置").triggered.connect(self._configure_realtime_voice)
         m.addAction("♟ 战棋决策实验室").triggered.connect(self._open_bg_agent)
+        m.addAction("🎮 战棋实战操作").triggered.connect(self._open_bg_live)
         m.addAction("退出").triggered.connect(self._quit)
         self._tray.setContextMenu(m)
         self._tray.show()
@@ -461,47 +462,13 @@ class PetWindow(QWidget):
             QMenu::separator { height: 1px; background: #444; margin: 4px 8px; }
             QMenu::icon { padding-left: 4px; }
         """)
-        for k, info in ACTIONS.items():
-            menu.addAction(f"{info.icon}  {info.label}").triggered.connect(
-                lambda _, x=k: self._act(x))
-        menu.addSeparator()
-        expr_menu = menu.addMenu("表情切换")
-        for name, label in [("normal","发呆"), ("happy","开心"), ("sleepy","困倦"),
-                             ("surprised","惊讶"), ("sad","委屈"), ("playful","傲娇")]:
-            expr_menu.addAction(label).triggered.connect(lambda _, n=name: self._anim.set_expression(n))
-        menu.addSeparator()
-        if self._anim.sticker_names:
-            sticker_menu = menu.addMenu("😜 表情包动作")
-            for name in self._anim.sticker_names:
-                sticker_menu.addAction(name).triggered.connect(
-                    lambda _, n=name: self._play_sticker_action(n))
-        menu.addAction("🎙 持续语音对话").triggered.connect(self._open_realtime_voice)
-        menu.addAction("⚙ 实时语音配置").triggered.connect(self._configure_realtime_voice)
-        voice_item = menu.addAction("🎤 按住说话（开启：按住企鹅说话，松开发送）")
-        voice_item.setCheckable(True)
-        voice_item.setChecked(self._voice_mode)
-        voice_item.triggered.connect(self._toggle_voice)
         menu.addAction("⚡ 一键拔线（跳战斗动画，F1）").triggered.connect(self._netcut)
-        menu.addAction("🔧 拔线自检（写 netcut_selftest.log）").triggered.connect(self._netcut_selftest)
-        menu.addAction("💬 打字对话").triggered.connect(lambda: self._open_input('chat'))
-        menu.addAction("🎮 分析对局（看屏幕）").triggered.connect(self._see_board)
-        menu.addAction("♟ 战棋决策实验室（算法 + 模型）").triggered.connect(self._open_bg_agent)
-        menu.addAction("📊 读内存看分数（即时）").triggered.connect(self._show_bg_ratings)
-        hover_item = menu.addAction("🔍 悬停查分（开启后悬停玩家显示分数）")
-        hover_item.setCheckable(True)
-        hover_item.setChecked(self._hover_rating_on)
-        hover_item.triggered.connect(self._toggle_hover_rating)
-        menu.addAction("🔮 阵容展望（招募阶段点企鹅也行）").triggered.connect(self._lineup_outlook)
-        menu.addAction("📋 最近战绩（记5场，来调侃）").triggered.connect(self._show_history)
-        menu.addSeparator()
-        talk_menu = menu.addMenu("跟我说话")
-        for scene, label in [("greeting","打招呼"), ("idle","闲聊"), ("tease","调皮"),
-                             ("hungry","说饿了"), ("bye","告别")]:
-            talk_menu.addAction(label).triggered.connect(lambda _, s=scene: self._say_scene(s))
-        menu.addSeparator()
-        menu.addAction("重置位置").triggered.connect(self._reset_pos)
-        menu.addSeparator()
-        menu.addAction("退出").triggered.connect(self._quit)
+        talk_menu = menu.addMenu("💬 对话")
+        talk_menu.addAction("打字对话").triggered.connect(lambda: self._open_input('chat'))
+        talk_menu.addAction("长语音通话").triggered.connect(self._open_realtime_voice)
+        talk_menu.addAction("语音设置").triggered.connect(self._configure_realtime_voice)
+        menu.addAction("📋 日志分析").triggered.connect(self._review_bg_logs)
+        menu.addAction("🎮 战局分析 / 实战操作").triggered.connect(self._open_bg_live)
         menu.exec_(e.globalPos())
 
     # ==================== 交互 ====================
@@ -818,6 +785,16 @@ class PetWindow(QWidget):
 
     def _ask_with_ctx(self, text):
         """问 AI 时若命中战绩关键词，注入最近战绩摘要（让咕嘎用战绩调侃你）"""
+        import re
+        if re.search(r'(打开|启动|进入).*(炉石|酒馆战[棋旗])', text):
+            self._open_bg_live()
+            self._bg_live_panel.open_game()
+            self._bg_live_panel.start(1)
+            return
+        if re.search(r'(帮我|替我|代).*(下棋|操作|打酒馆|打战棋)', text):
+            self._open_bg_live()
+            self._bg_live_panel.start(12)
+            return
         ctx = ''
         try:
             from core import match_history
@@ -1474,6 +1451,41 @@ class PetWindow(QWidget):
                 lines.append(f"{i+1}.{name}{me_tag}=未上榜")
         text = " | ".join(lines)
         self._say_with_expression(text, "normal", "point")
+
+    def _review_bg_logs(self):
+        from pathlib import Path
+        from PyQt5.QtWidgets import QDialog,QVBoxLayout,QTextBrowser,QLabel
+        from core.bg_combat_review import parse_hdt_records,render_review
+        folder=Path.home()/'Desktop/游戏/HDT/对战记录'
+        files=list(folder.glob('*.txt')) if folder.exists() else []
+        dialog=QDialog(self)
+        dialog.setWindowTitle('咕嘎 · 日志分析 / HDT 胜率记录')
+        dialog.resize(980,650)
+        layout=QVBoxLayout(dialog)
+        view=QTextBrowser()
+        layout.addWidget(view)
+        if files:
+            source=max(files,key=lambda p:p.stat().st_mtime)
+            if source.stat().st_size<=16*1024*1024:
+                report=parse_hdt_records(source.read_text(encoding='utf-8-sig'))
+                from datetime import datetime
+                layout.addWidget(QLabel('来源：'+source.name+'；最后写入：'+datetime.fromtimestamp(source.stat().st_mtime).strftime('%m-%d %H:%M:%S')+
+                    '。记录可能滞后，未自动对齐当前战斗。'))
+                view.setMarkdown(render_review(report))
+            else:
+                view.setPlainText('记录超过本次读取预算，请选择较小的按日记录。')
+        else:
+            view.setPlainText('尚未发现本机 HDT 对战记录；不会用假想对手胜率代替插件数据。')
+        self._bg_review_dialog=dialog
+        dialog.show()
+
+    def _open_bg_live(self):
+        from ui.bg_live_panel import BattlegroundLivePanel
+        if not getattr(self, '_bg_live_panel', None):
+            self._bg_live_panel = BattlegroundLivePanel(self)
+        self._bg_live_panel.show()
+        self._bg_live_panel.raise_()
+        self._bg_live_panel.activateWindow()
 
     def _open_bg_agent(self):
         from ui.bg_agent_panel import BattlegroundAgentPanel
