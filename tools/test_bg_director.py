@@ -192,6 +192,33 @@ class CloudTests(unittest.TestCase):
             self.assertEqual(post.call_count,1)
         self.assertEqual(budget.summary()['reported_total_tokens'],100)
 
+    def test_phase_ledger_survives_restart_and_stops_after_first_failure(self):
+        with tempfile.TemporaryDirectory() as folder:
+            ledger=Path(folder)/'phase.json'
+            config=dict(base_url='https://opencode.ai/inference/go/openai/v1',api_key='offline-key')
+            observation=dict(seat=0,turn=3,candidates=[dict(kind='END')])
+            first=CloudBudget(config,calls=128,ledger=ledger)
+            with patch('core.bg_cloud_policy.requests.post',return_value=SimpleNamespace(status_code=402)) as post:
+                first.pick(observation)
+                second=CloudBudget(config,calls=128,ledger=ledger)
+                second.pick(observation)
+                self.assertEqual(post.call_count,1)
+            data=json.loads(ledger.read_text(encoding='utf-8'))
+            self.assertTrue(data['failed'])
+            self.assertEqual(len(data['attempts']),1)
+            self.assertFalse(ledger.with_suffix('.json.lock').exists())
+            self.assertNotIn('offline-key',ledger.read_text(encoding='utf-8'))
+
+    def test_pending_reservation_and_exhausted_phase_never_call_api(self):
+        with tempfile.TemporaryDirectory() as folder:
+            ledger=Path(folder)/'phase.json'
+            for attempts in ([dict(status='pending')],[dict(status='complete')]*128):
+                ledger.write_text(json.dumps(dict(schema=1,limit=128,failed=False,attempts=attempts)),encoding='utf-8')
+                budget=CloudBudget(dict(base_url='https://opencode.ai/zen/go/v1',api_key='offline-key'),ledger=ledger)
+                with patch('core.bg_cloud_policy.requests.post') as post:
+                    self.assertIsNone(budget.pick(dict(seat=0,turn=3,candidates=[])))
+                    post.assert_not_called()
+
     def test_expert_labels_use_selected_action_and_reject_wrong_profile_or_nan(self):
         sample=dict(x=[[0.]*FEATURE_DIM,[1.]*FEATURE_DIM],action=1,teacher=0,
                     decision=dict(source='deepseek_expert',reason='未经核对的解释不会训练'))

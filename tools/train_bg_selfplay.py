@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+from collections import Counter
 import gzip
 import hashlib
 import json
@@ -28,6 +29,8 @@ def main():
     parser.add_argument("--output", required=True, help="New output directory; existing results are not overwritten")
     parser.add_argument("--bc-games", type=int, default=8)
     parser.add_argument("--rl-games", type=int, default=24)
+    parser.add_argument("--bc-epochs", type=int, default=60)
+    parser.add_argument("--objective", choices=("top4", "placement"), default="top4")
     parser.add_argument("--eval-games", type=int, default=16)
     parser.add_argument("--seed", type=int, default=1000)
     parser.add_argument("--max-seconds", type=int, default=600)
@@ -35,7 +38,8 @@ def main():
     parser.add_argument("--worker", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
     if not (1 <= args.bc_games <= 100 and 0 <= args.rl_games <= 1000
-            and 8 <= args.eval_games <= 128 and 30 <= args.max_seconds <= 7200):
+            and 8 <= args.eval_games <= 128 and 30 <= args.max_seconds <= 7200
+            and 1 <= args.bc_epochs <= 200):
         parser.error("Experiment budget out of range")
     if not args.worker:
         try:
@@ -134,7 +138,7 @@ def main():
             samples += [s for t in r["trajectories"] for s in t]
         initial = {k:v.clone() for k,v in model.state_dict().items()}
         losses = []
-        for epoch in range(10):
+        for epoch in range(args.bc_epochs):
             check_time()
             rng.shuffle(samples)
             total = 0
@@ -148,7 +152,8 @@ def main():
                 optimizer.step()
                 total += float(loss.detach()) * len(rows)
             losses.append(total / len(samples))
-        metrics["imitation"] = dict(samples=len(samples), loss=losses)
+        metrics["imitation"] = dict(samples=len(samples), loss=losses,
+                                    teacher_kinds=dict(Counter(s.get("kind", "expert") for s in samples)))
         bc_model = copy.deepcopy(model).eval()
         torch.save(dict(schema=1, profile=PROFILE, engine_revision=arena.e["revision"],
                         feature_dim=FEATURE_DIM, state_dict=model.state_dict()), output / "imitation.pt")
@@ -158,17 +163,27 @@ def main():
         def evaluate(name, learner):
             places = []
             top4 = []
+            action_counts = Counter()
+            disagreements = avoidable_ends = decisions = 0
             for i in range(args.eval_games):
                 seat = i % 8
                 policies = [teacher_policy] * 8
                 policies[seat] = learner
                 # Fixed seed/seat schedule identical across policies, disjoint from training.
-                r = run(policies, 1000000 + args.seed + i, "eval_" + name)
+                r = run(policies, 1000000 + args.seed + i, "eval_" + name, True)
+                for step in r["trajectories"][seat]:
+                    decisions += 1
+                    action_counts[step["kind"]] += 1
+                    disagreements += step["action"] != step["teacher"]
+                    avoidable_ends += (step["kind"] == "END" and step["x"][step["teacher"]][3] == 1.)
                 places.append(r["placements"][seat])
                 top4.append(top4_credit(r["placements"], seat))
             metrics["evaluations"][name] = dict(games=len(places), mean_placement=sum(places)/len(places),
                                                placements=places,
-                                               top4_rate=sum(top4)/len(places))
+                                               top4_rate=sum(top4)/len(places),
+                                               actions=dict(action_counts), decisions=decisions,
+                                               teacher_disagreements=disagreements,
+                                               ends_with_playable_minion=avoidable_ends)
             print(json.dumps(dict(stage="eval", policy=name, **metrics["evaluations"][name])), flush=True)
 
         untrained = Policy()
@@ -189,7 +204,8 @@ def main():
                 trajectory = r["trajectories"][seat]
                 if len(trajectory) != len(records[seat]):
                     raise RuntimeError("Rollout/log-prob alignment mismatch")
-                utility = (4.5 - r["placements"][seat]) / 3.5
+                utility = ((2 * top4_credit(r["placements"], seat) - 1) if args.objective == "top4"
+                           else (4.5 - r["placements"][seat]) / 3.5)
                 last_turn = trajectory[-1]["turn"]
                 for sample, (logp, value) in zip(trajectory, records[seat]):
                     target = utility * .99 ** (last_turn - sample["turn"])
@@ -219,6 +235,13 @@ def main():
         evaluate("ppo", policy_fn(model))
         torch.save(dict(schema=1, profile=PROFILE, engine_revision=arena.e["revision"],
                         feature_dim=FEATURE_DIM, state_dict=model.state_dict()), output / "ppo.pt")
+        baseline = metrics["evaluations"]["heuristic"]
+        final = metrics["evaluations"]["ppo"]
+        metrics["admission"] = dict(deployable=False,
+            reason="Restricted obsolete rules profile; live deployment requires current-rule validation",
+            mean_placement_gain=baseline["mean_placement"]-final["mean_placement"],
+            top4_gain=final["top4_rate"]-baseline["top4_rate"],
+            minimum_evaluation_games=64, sufficient_sample=args.eval_games >= 64)
         metrics["status"] = "complete"
         metrics["elapsed_seconds"] = round(time.monotonic()-started, 2)
         save_json(output / "report.json", metrics)

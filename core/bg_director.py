@@ -33,11 +33,13 @@ class BattlegroundDirector(QObject):
         self._event_seq = 0
 
     def status(self):
+        from core.bg_lab_status import training_status
+        lab = training_status()
         with self._lock:
             return dict(self._state, recent=list(self._recent),
                         observation_backend='Power.log', action_backend='window_input',
                         screen_backend='existing_vision_model_game_client_only',
-                        memory_execution_available=False)
+                        memory_execution_available=False, local_training=lab)
 
     def stop(self):
         self._stop.set()

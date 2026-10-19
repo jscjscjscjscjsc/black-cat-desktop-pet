@@ -47,6 +47,10 @@ def worker_read():
 
 def read_board():
     checked_mirror()
+    if sys.platform == 'win32':
+        from core.bg_live_windows import HearthstoneWindow
+        window = HearthstoneWindow()
+        window.check_integrity(window.find())
     tool = Path(__file__).resolve().parents[1]/'tools/bg_memory.py'
     try:
         result = subprocess.run([sys.executable,'-X','utf8',str(tool),'--worker'],

@@ -29,11 +29,11 @@
 ## 八席模拟和训练
 
 ```powershell
-python tools/bg_selfplay.py --engine 'C:/Users/Admin（无密码）/Desktop/Vibe oding/output/guga-selfplay-lab-20261016/HSBRSIM' --games 1 --seed 20261019 --cloud-calls 8 --output 'runtime/bg-lab/new-expert-battles.json'
+python tools/bg_selfplay.py --engine 'C:/Users/Admin（无密码）/Desktop/Vibe oding/output/guga-selfplay-lab-20261016/HSBRSIM' --games 1 --seed 20261019 --cloud-calls 8 --cloud-ledger 'runtime/bg-lab/your-phase-budget.json' --output 'runtime/bg-lab/new-expert-battles.json'
 python tools/train_bg_selfplay.py --engine 'C:/Users/Admin（无密码）/Desktop/Vibe oding/output/guga-selfplay-lab-20261016/HSBRSIM' --expert-battles 'runtime/bg-lab/new-expert-battles.json' --output 'runtime/bg-lab/new-expert-training' --bc-games 1 --rl-games 2 --eval-games 8 --max-seconds 90
 ```
 
-输出路径须新建。八个席位拥有各自策略上下文，云端共享显式请求预算，每席每回合至多一次专家选择；其他动作由规则策略完成并标注来源。不是八个大模型每步无限请求。`--cloud-calls` 默认 0，最大 64，消耗已配置的官方 Go 模型套餐；HTTP/解析/候选验证失败后停用本次云端，不重试、不切换服务。只将该席可见棋盘、手牌和商店发给模型，不泄露其他席位隐藏信息。
+输出路径须新建。八个席位拥有各自策略上下文，云端共享显式请求预算，从第 3 回合起，每席每回合至多一次专家选择；其他动作由规则策略完成并标注来源。不是八个大模型每步无限请求。`--cloud-calls` 默认 0，最大 128，消耗已配置的官方 Go 模型套餐；HTTP/解析/候选验证失败后停用本次云端，不重试、不切换服务。只将该席可见棋盘、手牌和商店发给模型，不泄露其他席位隐藏信息。
 
 `core/bg_expert_data.py` 校验 profile、引擎提交、完整对局、候选索引及有限特征。专家监督使用模型选择的合法动作索引，模型解释文字不作为训练标签，也不代表该选择最优。源轨迹哈希记入训练报告；评测种子与训练分离。
 
@@ -49,3 +49,5 @@ python tools/train_bg_selfplay.py --engine 'C:/Users/Admin（无密码）/Deskto
 - 已完成一次带 6 条专家动作的训练链路：1 局模仿、2 局 PPO、四种策略各 8 局独立种子评测，共 35 局，51.11 秒。规则基线平均名次 4.9375，未训练/模仿/PPO 均为 8.0；**本次训练没有带来可用的棋力提升，不将该权重投入实战**。6 条专家动作只证明监督接入，数据量和当前特征远不足以学习复杂战棋。
 
 最终态尚需完成：当前版本规则覆盖与胜率引擎、稳定的可用内存局面、直接执行后端、发现/目标/站位等动作、整局验收和充足的独立对手评测。当前交付是可运行、可停止、可复盘的集成阶段，不能称完整自动代打已经完成。
+
+本轮训练评测与交付限制见 [2026-10-19 训练阶段报告](training-stage-20261019.md)。云端调用必须显式传入同阶段共享的 `--cloud-ledger`，台账在请求前预占、失败后跨进程停用；不应通过新建台账重置已授权额度。内存读取现先检查进程权限差异，以免将管理员炉石与普通权限桌宠的不匹配误报为规则不兼容。
