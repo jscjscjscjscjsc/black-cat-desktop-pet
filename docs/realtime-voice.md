@@ -1,5 +1,7 @@
 # 咕嘎持续语音升级
 
+2026-10-19：默认“长语音 · 边聊边执行”已恢复阿里端到端模型，并通过原生 `ask_deepseek` 工具调用接入 DeepSeek 问答和任务执行。阿里负责实时通话和原生音频播报，DeepSeek 负责实质问答、推理及软件操作。对话窗内新增“关闭”、语音设置、静音和打断按钮；关闭或 Esc 停止通话但保留桌宠。详见 [智能体生态说明](agent-ecosystem.md)。下述平台、音色、额度保护与耳机/外放机制继续沿用。
+
 当前默认平台：千问 AI 平台 `platform.qianwenai.com`，模型 `qwen-audio-3.1-realtime-plus`，音色 `longanqian_v3.1`。
 调用地址：`wss://maas.qianwenaiapi.com/api-ws/v1/realtime`。只需该平台的通用 API Key，无需业务空间 ID。
 配置中可另选阿里云百炼；百炼需对应地域和业务空间 ID，不能混用两个平台的 Key。

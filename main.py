@@ -28,7 +28,7 @@ def main():
     window = PetWindow()
     # Only an explicit launch flag starts capture; normal startup stays quiet.
     if '--voice' in sys.argv:
-        QTimer.singleShot(300, window._open_realtime_voice)
+        QTimer.singleShot(300, window._open_agent_voice)
     if '--bg-live' in sys.argv:
         QTimer.singleShot(300, window._open_bg_live)
 

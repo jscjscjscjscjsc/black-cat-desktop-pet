@@ -282,8 +282,11 @@ class RealtimeVoice(QObject):
                     command = self._commands.get_nowait()
                     if command == 'interrupt' and self._response_id:
                         self._send(dict(type='response.cancel', response_id=self._response_id))
+                    else:
+                        self._process_command(command)
                 except queue.Empty:
                     pass
+                self._process_command(None)
                 try:
                     raw = self._input.get(timeout=0.1)
                 except queue.Empty:
@@ -296,6 +299,12 @@ class RealtimeVoice(QObject):
                 self._ws.shutdown()
             except Exception:
                 pass
+
+    def _process_command(self, command):
+        """Extension point for worker-owned commands (never block audio callbacks)."""
+
+    def _session_settings(self):
+        return session_settings(self._cfg, self._history)
 
     def _handle_event(self, event):
         kind = event.get('type')
@@ -391,7 +400,7 @@ class RealtimeVoice(QObject):
             while time.monotonic() < deadline and not self._stop.is_set():
                 event = json.loads(ws.recv())
                 if event.get('type') == 'session.created':
-                    self._send(dict(type='session.update', session=session_settings(self._cfg, self._history)))
+                    self._send(dict(type='session.update', session=self._session_settings()))
                 elif event.get('type') == 'session.updated':
                     configured = True
                     break

@@ -125,6 +125,8 @@ class PetWindow(QWidget):
 
         # --- TTS 语音引擎 ---
         self._tts = TTSEngine()
+        self._tts._player.setVolume(self._config._s.value('agent/volume', 80, type=int))
+        self.setWindowOpacity(self._config.opacity)
         self._tts.speak_started.connect(self._on_tts_started)
         self._tts.speak_finished.connect(self._on_tts_finished)
 
@@ -148,6 +150,7 @@ class PetWindow(QWidget):
         self._bubble_timer.setSingleShot(True)
         self._bubble_timer.timeout.connect(self._hide_bubble)
         self._chat_panel = None
+        self._agent_panel = None
         self._chat_view = None
         self._chat_history = []
         self._input_mode = "chat"
@@ -177,6 +180,8 @@ class PetWindow(QWidget):
         self._ai = AIChatEngine(self)
         self._ai.reply_ready.connect(self._on_ai_reply)
         self._ai.failed.connect(self._on_ai_fail)
+        from ui.mcp_bridge import SelfMCPBridge
+        self._self_mcp = SelfMCPBridge(self)
         self._vision_done.connect(self._on_vision_result)
         self._bg_rating_done.connect(self._on_bg_rating_done)
 
@@ -266,7 +271,8 @@ class PetWindow(QWidget):
         m.addAction("显示/隐藏").triggered.connect(
             lambda: self.hide() if self.isVisible() else (self.show(), self._force_top()))
         m.addSeparator()
-        m.addAction("🎙 持续语音对话").triggered.connect(self._open_realtime_voice)
+        m.addAction("💬 咕嘎智能体 · 对话与项目").triggered.connect(self._open_agent_chat)
+        m.addAction("🎙 长语音 · 咕嘎智能体").triggered.connect(self._open_agent_voice)
         m.addAction("⚙ 实时语音配置").triggered.connect(self._configure_realtime_voice)
         m.addAction("♟ 战棋决策实验室").triggered.connect(self._open_bg_agent)
         m.addAction("🎮 战棋实战操作").triggered.connect(self._open_bg_live)
@@ -463,10 +469,11 @@ class PetWindow(QWidget):
             QMenu::icon { padding-left: 4px; }
         """)
         menu.addAction("⚡ 一键拔线（跳战斗动画，F1）").triggered.connect(self._netcut)
-        talk_menu = menu.addMenu("💬 对话")
-        talk_menu.addAction("打字对话").triggered.connect(lambda: self._open_input('chat'))
-        talk_menu.addAction("长语音通话").triggered.connect(self._open_realtime_voice)
-        talk_menu.addAction("语音设置").triggered.connect(self._configure_realtime_voice)
+        menu.addAction("💬 对话 · 咕嘎智能体").triggered.connect(self._open_agent_chat)
+        menu.addAction("🎙 长语音 · 边聊边执行").triggered.connect(self._open_agent_voice)
+        talk_menu = menu.addMenu("🎙 原语音功能")
+        talk_menu.addAction("千问长语音通话").triggered.connect(self._open_realtime_voice)
+        talk_menu.addAction("千问语音设置").triggered.connect(self._configure_realtime_voice)
         menu.addAction("📋 日志分析").triggered.connect(self._review_bg_logs)
         menu.addAction("🎮 战局分析 / 实战操作").triggered.connect(self._open_bg_live)
         menu.exec_(e.globalPos())
@@ -546,6 +553,22 @@ class PetWindow(QWidget):
 
     # ==================== AI 对话 ====================
 
+    def _ensure_agent_panel(self):
+        if self._agent_panel is None:
+            from ui.agent_chat import AgentChatWindow
+            self._agent_panel = AgentChatWindow(self)
+        return self._agent_panel
+
+    def _open_agent_chat(self):
+        self._ensure_agent_panel()
+        self._agent_panel.show()
+        self._agent_panel.raise_()
+        self._agent_panel.activateWindow()
+
+    def _open_agent_voice(self):
+        self._open_agent_chat()
+        self._agent_panel.voice_button.setChecked(True)
+
     def _on_ai_reply(self, text, expression, action):
         self._say_with_expression(text, expression, action)
         # 助教模式: 对话追加到面板(确保面板已创建)
@@ -586,6 +609,10 @@ class PetWindow(QWidget):
             self._input_hint = QLabel("💬")
             self._input_hint.setStyleSheet("color: #8a8aaa; font-size: 11px;")
             lay.addWidget(self._input_hint)
+            from PyQt5.QtWidgets import QPushButton
+            close_input = QPushButton('关闭', bar)
+            close_input.clicked.connect(self._hide_inline)
+            lay.addWidget(close_input)
             self._inline_input = bar
 
             # Enter发送 / Ctrl+Enter换行 / Esc关闭 — 用 eventFilter 拦截,
@@ -667,7 +694,7 @@ class PetWindow(QWidget):
     def _ensure_chat_panel(self):
         if self._chat_panel is not None:
             return self._chat_panel
-        from PyQt5.QtWidgets import QFrame, QVBoxLayout, QTextEdit, QLabel, QShortcut
+        from PyQt5.QtWidgets import QFrame, QVBoxLayout, QTextEdit, QLabel, QShortcut, QPushButton
         from PyQt5.QtGui import QKeySequence
         from PyQt5.QtCore import Qt, QPoint
         panel = QFrame(None, Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
@@ -683,7 +710,13 @@ class PetWindow(QWidget):
         lay.setSpacing(4)
         title = QLabel("📚 咕嘎助教对话  (Esc 关闭 · 拖动标题移动)")
         title.setStyleSheet("color: #8acaff; font-size: 12px; font-weight: bold; padding: 2px;")
-        lay.addWidget(title)
+        title_row = QHBoxLayout()
+        title_row.addWidget(title, 1)
+        close_panel = QPushButton('关闭', panel)
+        close_panel.setStyleSheet('color: #eef; padding: 4px 10px; border: 1px solid #668; border-radius: 5px;')
+        close_panel.clicked.connect(self._hide_chat_panel)
+        title_row.addWidget(close_panel)
+        lay.addLayout(title_row)
         view = QTextEdit()
         view.setReadOnly(True)
         view.setFixedSize(420, 260)
@@ -820,6 +853,8 @@ class PetWindow(QWidget):
         self._say_with_expression(f"咕嘎～{name}！", "happy", "none")
 
     def _toggle_voice(self, checked):
+        if checked and self._agent_panel and self._agent_panel.voice_active:
+            return
         if checked and self._realtime_active():
             return
         self._voice_mode = bool(checked)
@@ -830,6 +865,8 @@ class PetWindow(QWidget):
             self._say_with_expression("咕嘎～语音模式关了。", "normal", "none")
 
     def _start_voice(self):
+        if self._agent_panel and self._agent_panel.voice_active:
+            return
         if self._realtime_active():
             return
         if self._recording:
@@ -876,16 +913,25 @@ class PetWindow(QWidget):
     def _configure_realtime_voice(self):
         from ui.voice_dialog import VoiceSettingsDialog
         if self._realtime_active():
-            self._voice_call_panel.raise_()
+            if self._voice_call_panel:
+                self._voice_call_panel.raise_()
+            elif self._agent_panel:
+                self._open_agent_chat()
+                self._agent_panel.status.setText('请先结束长语音通话，再修改语音配置')
             return
         VoiceSettingsDialog(self).exec_()
 
     def _open_realtime_voice(self):
+        if self._agent_panel and self._agent_panel.voice_active:
+            self._agent_panel.voice_button.setChecked(False)
         from core.realtime_voice import RealtimeVoice, load_settings, connection_url
         from ui.voice_dialog import VoiceCallDialog, VoiceSettingsDialog
         if self._realtime_active():
-            self._voice_call_panel.show()
-            self._voice_call_panel.raise_()
+            if self._voice_call_panel:
+                self._voice_call_panel.show()
+                self._voice_call_panel.raise_()
+            elif self._agent_panel:
+                self._agent_panel.status.setText('正在释放语音连接，请稍后重试')
             return
         try:
             connection_url(load_settings())
@@ -1658,7 +1704,7 @@ class PetWindow(QWidget):
         try:
             hwnd = int(self.winId())
             ctypes.windll.user32.SetWindowPos(
-                hwnd, HWND_TOPMOST, 0, 0, 0, 0,
+                hwnd, HWND_TOPMOST if self._config._s.value('agent/topmost', True, type=bool) else HWND_NOTOPMOST, 0, 0, 0, 0,
                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE)
             style = ctypes.windll.user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
             ctypes.windll.user32.SetWindowLongW(
@@ -1683,6 +1729,9 @@ class PetWindow(QWidget):
         self._config.save_status(s["hunger"], s["happy"], s["energy"])
 
     def _quit(self):
+        self._self_mcp.close()
+        if self._agent_panel:
+            self._agent_panel.shutdown()
         if self._realtime_voice:
             self._realtime_voice.stop()
         self._save_state()

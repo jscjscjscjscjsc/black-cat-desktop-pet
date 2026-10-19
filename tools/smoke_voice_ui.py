@@ -32,10 +32,12 @@ with patch('core.keyboard_hook.KeyboardHook.start'), patch('ui.tts_engine.TTSEng
         last_round=dict(round=1, usage=dict(total_tokens=224, input_tokens=156, output_tokens=68,
             input_text_tokens=156, input_audio_tokens=None, output_text_tokens=14, output_audio_tokens=53))))
     def finish():
-        assert pet._tray.contextMenu().actions()[2].text() == '🎙 持续语音对话'
+        assert any(a.text() == '🎙 长语音 · 咕嘎智能体' for a in pet._tray.contextMenu().actions())
         assert '连续聊' in panel.transcript.toPlainText()
         assert panel.last_tokens.text() == '224'
-        panel.grab().save(str(Path(__file__).resolve().parents[1] / 'tools/qa/voice_call_preview.png'))
+        output = Path(__file__).resolve().parents[1] / 'runtime/chat/legacy-voice-preview.png'
+        output.parent.mkdir(parents=True, exist_ok=True)
+        panel.grab().save(str(output))
         for timer in pet.findChildren(QTimer):
             timer.stop()
         panel.close()
