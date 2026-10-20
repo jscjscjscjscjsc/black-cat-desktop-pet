@@ -150,6 +150,7 @@ class BattlegroundDirector(QObject):
             previous_phase = 'unknown'
             initial_game = None
             attempts = 0
+            auto_cut_speech = None
             while not self._stop.is_set() and time.monotonic() < deadline:
                 session.reader.poll()
                 game = getattr(session.reader.parser,'game_index',None)
@@ -164,6 +165,33 @@ class BattlegroundDirector(QObject):
                     self._publish(dict(type='round_review', speech=review_text(pending,combat_finished=True)))
                     pending.clear()
                 previous_phase = phase
+                if mode == 'auto' and phase == 'combat':
+                    # Automatic disconnects are scoped to an explicitly started
+                    # full-auto session. Plugin/observe/step paths never enter.
+                    try:
+                        from core.log_reader import read_current_board
+                        from core.netcut_budget import DisconnectBudget
+                        from core.netcut_policy import auto_netcut_decision
+                        board = read_current_board()
+                        budget = DisconnectBudget()
+                        budget_state = budget.status((board or {}).get('game_key',''))
+                        combat_id = f"{game}:{board.get('turn','?')}:{len(board.get('theirs') or [])}"
+                        should, reason = auto_netcut_decision(
+                            board or {}, full_auto=True,
+                            remaining=budget_state['remaining'],
+                            cooldown_remaining=budget_state['cooldown_remaining'],
+                            already_cut=combat_id in budget_state.get('combat_ids',[]))
+                        if should:
+                            cut = budget.cut((board or {}).get('game_key',''), combat_id)
+                            if cut.get('ok'):
+                                auto_cut_speech = f"全自动接管：{reason}；本局第 {cut['count']} 次，剩余 {cut['remaining']} 次。"
+                                self._publish(dict(type='auto_netcut', reason=reason,
+                                                   count=cut['count'], remaining=cut['remaining'],
+                                                   speech=auto_cut_speech))
+                    except Exception as exc:
+                        self._publish(dict(type='auto_netcut_skipped',
+                                           reason=str(exc)[:180],
+                                           speech='全自动拔线判断未执行，继续按日志观察战斗。'))
                 if mode == 'observe' or phase == 'combat' or attempts >= count:
                     if mode == 'step' and attempts >= count:
                         break
@@ -184,7 +212,10 @@ class BattlegroundDirector(QObject):
                     break
                 self._stop.wait(.25)
             if pending or mode not in ('observe',):
-                self._publish(dict(type='review', speech=review_text(pending or records), stopped=self._stop.is_set()))
+                speech = review_text(pending or records)
+                if auto_cut_speech:
+                    speech = auto_cut_speech + ' ' + speech
+                self._publish(dict(type='review', speech=speech, stopped=self._stop.is_set()))
         except Exception as exc:
             error = str(exc)[:240] if isinstance(exc,(RuntimeError,ValueError)) else '战棋后台读取或模型请求失败，已停止后续动作'
             self._publish(dict(type='paused', error=error, speech='战棋任务已暂停：'+error))

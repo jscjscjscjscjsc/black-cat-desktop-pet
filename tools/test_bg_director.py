@@ -1,5 +1,6 @@
 """Offline director/voice/backend regression: no game input or paid API calls."""
 import json
+import inspect
 import os
 from pathlib import Path
 from types import SimpleNamespace
@@ -29,6 +30,11 @@ APP = QApplication.instance() or QApplication([])
 
 
 class DirectorTests(unittest.TestCase):
+    def test_background_auto_watch_never_calls_netcut(self):
+        from ui.pet_window import PetWindow
+        source=inspect.getsource(PetWindow._auto_watch)
+        self.assertNotIn('_netcut(',source)
+
     def test_phase_requires_explicit_consistent_game_tags(self):
         p = SimpleNamespace(entities={1:dict(CARDTYPE='GAME')})
         self.assertEqual(observed_phase(p),'unknown')

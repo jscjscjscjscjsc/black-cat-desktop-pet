@@ -16,7 +16,12 @@
 
 ## 数据、执行和播报分工
 
-`core/netcut_budget.py`：每局最多 9 次的持久拔线额度。自动入口仅在日志确认战斗阶段工作，同一回合不重复，15 秒冷却；`battleground(action=netcut)` 与右键按钮共用额度。新局按 `CREATE_GAME` 行生成稳定指纹，进程重启不会重置。详见 [2026-10-20 升级记录](battleground-upgrade-20261020.md)。
+`core/netcut_budget.py`：每局最多 9 次的持久拔线额度。
+
+- **插件/手动模式**：右键、F1、`observe`、`step` 和自动观战绝不自动拔线；只在用户当前明确要求时执行。
+- **全自动模式**：只有用户明确启动 `battleground(action=auto)` 后才启用 `core/netcut_policy.py`。该会话在日志确认战斗、可见双方随从合计至少 7 个、剩余额度可用且不在重连冷却时，最多拔一次；小战斗直接跳过。这是时间策略，不是胜率或因果判断。
+
+`battleground(action=netcut)`、右键和全自动会话共用同一持久额度。新局按 `CREATE_GAME` 行生成稳定指纹，进程重启不会重置。详见 [2026-10-20 升级记录](battleground-upgrade-20261020.md)。
 
 `core/bg_current_knowledge.py`：读取固定提交的当前客户端卡牌快照，为战棋决策补充名称、种族、基础数值和卡面文本。该数据不证明服务器种族池或完整规则；日志里的实际攻血与费用优先。
 
@@ -41,7 +46,7 @@ python tools/train_bg_selfplay.py --engine 'C:/Users/Admin（无密码）/Deskto
 
 `core/bg_expert_data.py` 校验 profile、引擎提交、完整对局、候选索引及有限特征。专家监督使用模型选择的合法动作索引，模型解释文字不作为训练标签，也不代表该选择最优。源轨迹哈希记入训练报告；评测种子与训练分离。
 
-依然是旧 `hsrl2-neutral-minion-lab-v1` 规则子集，不支持完整当前天梯、全部英雄技能/法术/站位/新版本机制。卡池与规则差异见 [离线实验室说明](battleground-selfplay.md)。本地权重不会自动替换当前实战 DS 决策器，更不会把离线名次换算为天梯段位。
+当前训练 profile 为 `hsrl2-rich-spell-position-v2`，已加入法术与队首/队尾动作，但仍是旧 36.2.2 规则子集，不支持完整当前天梯、全部英雄技能、饰品、目标选择和新版本机制。卡池与规则差异见 [离线实验室说明](battleground-selfplay.md)。本地权重不会自动替换当前实战 DS 决策器，更不会把离线名次换算为天梯段位。
 
 ## 本轮实测
 

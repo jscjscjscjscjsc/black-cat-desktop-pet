@@ -476,9 +476,9 @@ class PetWindow(QWidget):
             from core import log_reader as _netcut_logs
             from core.netcut_budget import DisconnectBudget as _NetcutBudget
             _netcut_state = _NetcutBudget().status((_netcut_logs.read_current_board() or {}).get('game_key', ''))
-            _netcut_text = f"⚡ 自动拔线（本局 {_netcut_state['count']}/9，F1）"
+            _netcut_text = f"⚡ 一键拔线（本局 {_netcut_state['count']}/9，F1）"
         except Exception:
-            _netcut_text = "⚡ 自动拔线（每局最多 9 次，F1）"
+            _netcut_text = "⚡ 一键拔线（每局最多 9 次，F1）"
         menu.addAction(_netcut_text).triggered.connect(self._netcut)
         menu.addAction("💬 对话 · 咕嘎智能体").triggered.connect(self._open_agent_chat)
         menu.addAction("🎙 长语音 · 边聊边执行").triggered.connect(self._open_agent_voice)
@@ -1193,7 +1193,7 @@ class PetWindow(QWidget):
                 f"咕嘎？自检有问题，详见 netcut_selftest.log（{first}）",
                 "sad", "shake")
 
-    def _netcut(self, automatic=False, board=None):
+    def _netcut(self, _checked=False, board=None):
         """强制断开炉石对局连接（跳战斗动画的时间技巧），需管理员权限"""
         import time as _time
         from core.netcut_budget import DisconnectBudget
@@ -1224,36 +1224,29 @@ class PetWindow(QWidget):
         state = budget.status(game_key)
         self._netcut_count = state['count']
         if state['exhausted']:
-            if not automatic:
-                self._say_with_expression(
-                    "咕嘎～这局已经拔了 9 次了！已经达到硬上限，稳一点！",
-                    "sad", "shake")
+            self._say_with_expression(
+                "咕嘎～这局已经拔了 9 次了！已经达到硬上限，稳一点！",
+                "sad", "shake")
             return
         if now < getattr(self, '_netcut_reconnect_until', 0) or state['cooldown_remaining'] > 0:
-            if not automatic:
-                self._say_with_expression("咕嘎～重连保护中，等几秒再拔～", "surprised", "peek")
+            self._say_with_expression("咕嘎～重连保护中，等几秒再拔～", "surprised", "peek")
             return
         if board and board.get('active') and board.get('theirs'):
             pass  # 战斗中，OK
         elif board and board.get('active') and not board.get('theirs'):
-            if not automatic:
-                self._say_with_expression(
-                    "咕嘎～现在还在招募阶段，对手没开打，拔了也没用！等战斗开始再按！",
-                    "tsundere", "tsundere")
+            self._say_with_expression(
+                "咕嘎～现在还在招募阶段，对手没开打，拔了也没用！等战斗开始再按！",
+                "tsundere", "tsundere")
             return
         else:
-            if not automatic:
-                self._say_with_expression(
-                    "咕嘎？没检测到对局，开一把酒馆战棋再拔线！", "sad", "shake")
+            self._say_with_expression(
+                "咕嘎？没检测到对局，开一把酒馆战棋再拔线！", "sad", "shake")
             return
         combat_id = f"{board.get('turn', '?')}:{len(board.get('theirs', []))}"
-        if automatic and combat_id in state.get('combat_ids', []):
-            return
         try:
             result = budget.cut(game_key, combat_id)
         except RuntimeError as exc:
-            if not automatic:
-                self._say_with_expression(f"咕嘎？{exc}", "sad", "shake")
+            self._say_with_expression(f"咕嘎？{exc}", "sad", "shake")
             return
         if result.get('ok'):
             n, msg = result['closed'], result['source']
@@ -1267,8 +1260,6 @@ class PetWindow(QWidget):
             self._watch_reconnect(0)
             return
         msg = result.get('error', '')
-        if automatic:
-            return
         if '管理员权限' in (msg or '') or 'NOT_ELEVATED' in (msg or ''):
             self._say_with_expression(
                 "咕嘎？企鹅没管理员权限，拔不了线！桌面有个"
@@ -1316,21 +1307,7 @@ class PetWindow(QWidget):
     # ==================== 自动观战（战斗开始自动分析） ====================
 
     def _auto_watch(self):
-        """每 4 秒轮询日志：检测 招募→战斗 转换，自动给胜率+军师建议"""
-        try:
-            from core import log_reader
-            early_board = log_reader.read_current_board()
-            early_key = (early_board or {}).get('game_key', '')
-            if early_key and early_key != getattr(self, '_netcut_game_key', None):
-                self._netcut_game_key = early_key
-                self._netcut_reconnect_until = 0
-                self._last_netcut_t = 0
-                self._netcut_count = 0
-            if (getattr(self, '_auto_netcut_enabled', True) and early_board
-                    and early_board.get('active') and early_board.get('theirs')):
-                self._netcut(automatic=True, board=early_board)
-        except Exception:
-            pass
+        """每 4 秒轮询日志：检测招募→战斗转换并分析；绝不自动拔线。"""
         if self._realtime_active():
             return
         import time as _time
