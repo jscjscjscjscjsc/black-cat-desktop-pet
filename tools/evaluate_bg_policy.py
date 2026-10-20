@@ -9,7 +9,7 @@ import sys
 import time
 
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
-from core.bg_selfplay import Arena, PROFILE, load_engine, save_json, teacher_policy
+from core.bg_selfplay import Arena, KINDS, PROFILE, load_engine, save_json, teacher_policy
 from core.bg_training_gate import compare
 
 
@@ -66,7 +66,8 @@ def main():
             def counted(x,teacher):
                 nonlocal mistakes,decisions
                 chosen=policy(x,teacher);decisions+=1
-                mistakes+=bool(x[chosen][0] == 1 and x[teacher][3] == 1)
+                mistakes+=bool(x[chosen][KINDS.index("END")] == 1 and
+                               x[teacher][KINDS.index("PLAY")] == 1)
                 return chosen
             for i in range(args.games):
                 if time.monotonic()-started > args.max_seconds:raise TimeoutError('Evaluation stage budget')

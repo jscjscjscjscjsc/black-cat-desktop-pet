@@ -6,6 +6,7 @@ This is a restricted simulator profile, NOT a current-live-game rules engine.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
 import json
 from pathlib import Path
 import random
@@ -13,10 +14,15 @@ import subprocess
 import sys
 import time
 
-ENGINE_REVISION = "4e0525a198352557ef816bd3a53566d6ffd4c164"
-PROFILE = "hsrl2-neutral-minion-lab-v1"
-KINDS = ("END", "BUY", "SELL", "PLAY", "REFRESH", "UPGRADE")
-FEATURE_DIM = 28
+ENGINE_REVISION = "84e6e413e73fda01f25398f444bdd17c86f6f302"
+PROFILE = "hsrl2-rich-spell-position-v2"
+KINDS = ("END", "BUY", "PLAY", "BUY_SPELL", "PLAY_SPELL", "SELL",
+         "REFRESH", "FREEZE", "UPGRADE")
+ACTION_DIM = len(KINDS)
+STATE_DIM = 12
+VALUE_DIM = 17
+IDENTITY_DIM = 10
+FEATURE_DIM = ACTION_DIM + STATE_DIM + VALUE_DIM + IDENTITY_DIM
 
 
 def load_engine(path):
@@ -63,6 +69,7 @@ def load_engine(path):
 class Choice:
     kind: str
     index: int = -1
+    position: int = -1
 
 
 def placement_from_groups(groups):
@@ -103,67 +110,120 @@ class Arena:
             return actions
         if not hero.hand_full():
             for i, card in enumerate(hero.tavern):
-                cost = card.get(T.COST, 3)
-                if isinstance(card, E["Minion"]) and hero.gold >= cost:
+                cost = card.get(T.COST, 3 if isinstance(card, E["Minion"]) else 1)
+                if hero.gold < cost:
+                    continue
+                if isinstance(card, E["Minion"]):
                     actions.append(Choice("BUY", i))
+                elif isinstance(card, E["Spell"]):
+                    card_def = game.db.get(card.card_id)
+                    if (card_def and (card_def.unplayable or
+                                      (card_def.health_cost and hero.health + hero.armor <= cost))):
+                        continue
+                    actions.append(Choice("BUY_SPELL", i))
         actions += [Choice("SELL", i) for i in range(len(hero.board))]
         for i, card in enumerate(hero.hand):
             d = game.db.get(card.card_id)
             if card.has(T.LOCKED_IN_HAND) or (d and d.unplayable):
                 continue
             if isinstance(card, E["Minion"]) and not hero.board_full():
-                actions.append(Choice("PLAY", i))
-            # Generated spell/target decisions are excluded from this first profile.
+                positions = {0, len(hero.board)}
+                for position in sorted(positions):
+                    actions.append(Choice("PLAY", i, position))
+            elif isinstance(card, E["Spell"]):
+                targets = self.spell_targets(game, hero, card)
+                if getattr(card.scripts, "needs_target", False) and not targets:
+                    continue
+                actions.append(Choice("PLAY_SPELL", i))
         if hero.gold >= 1 or hero.get(T.FREE_REFRESH_REMAINING, 0) > 0:
             actions.append(Choice("REFRESH"))
+        if hero.tavern and not hero.has(T.FROZEN):
+            actions.append(Choice("FREEZE"))
         if hero.tavern_tier < 6 and hero.gold >= max(0, hero.upgrade_cost):
             actions.append(Choice("UPGRADE"))
         return actions
 
+    @staticmethod
+    def spell_targets(game, hero, spell):
+        script = getattr(spell, "scripts", None)
+        candidate_fn = getattr(script, "target_candidates", None)
+        if callable(candidate_fn):
+            return [x for x in candidate_fn(spell, game)
+                    if getattr(x, "dead", False) is not True]
+        return [m for m in hero.board if not m.dead]
+
     def features(self, game, hero, actions):
         T = self.e["Tag"]
-        strength = lambda m: m.atk + m.health + (5 if m.has(T.DIVINE_SHIELD) else 0)
+        strength = lambda m: (getattr(m, "atk", 0) + getattr(m, "health", 0)
+                              + (5 if m.has(T.DIVINE_SHIELD) else 0))
         weak = min((strength(m) for m in hero.board), default=0)
         best = max((strength(m) for m in hero.tavern if isinstance(m, self.e["Minion"])), default=0)
+        races = [m.race for m in hero.board if m.race.name not in ("ALL", "NONE")]
+        dominant = max(set(races), key=races.count) if races else None
+        dominant_share = races.count(dominant)/len(races) if dominant is not None else 0.
+        shop_minions = sum(isinstance(x, self.e["Minion"]) for x in hero.tavern)
+        shop_spells = sum(isinstance(x, self.e["Spell"]) for x in hero.tavern)
         state = [game.turn / 20, hero.gold / 10, (hero.health + hero.armor) / 40,
                  hero.tavern_tier / 6, hero.upgrade_cost / 10, len(hero.board) / 7,
-                 len(hero.hand) / 10, sum(strength(m) for m in hero.board) / 200]
+                 len(hero.hand) / 10, sum(strength(m) for m in hero.board) / 200,
+                 shop_minions / 7, shop_spells / 7, dominant_share,
+                 float(hero.has(T.FROZEN))]
+        keyword_tags = (T.DIVINE_SHIELD, T.TAUNT, T.REBORN, T.WINDFURY,
+                        T.VENOMOUS, T.CLEAVE, T.BATTLECRY, T.DEATHRATTLE)
         rows = []
         for action in actions:
             card = None
-            if action.kind in ("BUY", "SELL", "PLAY"):
-                card = {"BUY": hero.tavern, "SELL": hero.board, "PLAY": hero.hand}[action.kind][action.index]
-            values = [0.] * 14
+            if action.kind in ("BUY", "BUY_SPELL", "SELL", "PLAY", "PLAY_SPELL"):
+                zone = {"BUY": hero.tavern, "BUY_SPELL": hero.tavern,
+                        "SELL": hero.board, "PLAY": hero.hand,
+                        "PLAY_SPELL": hero.hand}[action.kind]
+                card = zone[action.index]
+            values = [0.] * VALUE_DIM
             if card is not None:
                 d = game.db.get(card.card_id)
-                values = [card.atk / 30, card.health / 30,
+                values = [getattr(card, "atk", 0) / 30, getattr(card, "health", 0) / 30,
                           getattr(card, "tech_level", 1) / 6,
-                          float(card.has(T.DIVINE_SHIELD)), float(card.has(T.TAUNT)),
-                          float(card.has(T.REBORN)), float(card.has(T.WINDFURY)),
-                          float(card.has(T.VENOMOUS)), float(card.has(T.CLEAVE)),
+                          *[float(card.has(tag)) for tag in keyword_tags],
                           sum(m.card_id == card.card_id for m in hero.board + hero.hand) / 3,
                           (strength(card) - weak) / 30, (best - strength(card)) / 30,
-                          float(bool(d and "battlecry" in d.keywords)),
-                          float(bool(d and "deathrattle" in d.keywords))]
-            rows.append([float(action.kind == k) for k in KINDS] + state + values)
+                          (action.position / 7 if action.position >= 0 else 0.),
+                          float(dominant is not None and getattr(card, "race", None) is not None and
+                                getattr(card, "race").name in ("ALL", dominant.name)),
+                          (getattr(card, "tech_level", 1) - hero.tavern_tier) / 6]
+            bits = hashlib.blake2b(str(card.card_id if card is not None else action.kind).encode(),
+                                   digest_size=8).digest()
+            identity = [float((int.from_bytes(bits, 'big') >> i) & 1) for i in range(IDENTITY_DIM)]
+            rows.append([float(action.kind == k) for k in KINDS] + state + values + identity)
         assert all(len(row) == FEATURE_DIM for row in rows)
         return rows
 
     def heuristic(self, game, hero, actions):
+        T = self.e["Tag"]
         rows = self.features(game, hero, actions)
         scores = []
         for action, row in zip(actions, rows):
-            stat = (row[14] + row[15]) * 30 + row[17] * 5
+            stat = (row[ACTION_DIM+STATE_DIM] + row[ACTION_DIM+STATE_DIM+1]) * 30 \
+                   + row[ACTION_DIM+STATE_DIM+3] * 5
             if action.kind == "PLAY":
                 score = 100 + stat
             elif action.kind == "BUY":
                 score = (30 + stat) if len(hero.board) + len(hero.hand) < 7 else -20
+            elif action.kind == "PLAY_SPELL":
+                score = 55 + row[ACTION_DIM+STATE_DIM+2] * 8
+            elif action.kind == "BUY_SPELL":
+                score = 28 + row[ACTION_DIM+STATE_DIM+2] * 7
+            elif action.kind == "FREEZE":
+                valuable = any(isinstance(x, self.e["Minion"]) and x.get(T.COST, 3) > hero.gold
+                               and getattr(x, "tech_level", 1) >= hero.tavern_tier
+                               for x in hero.tavern)
+                score = 8 if valuable else -12
             elif action.kind == "UPGRADE":
                 expected = min(6, 1 + game.turn // 2)
                 score = 75 if hero.tavern_tier < expected else -15
             elif action.kind == "SELL":
-                score = 40 + row[25] * 30 if (len(hero.board) == 7 and hero.gold >= 2
-                                                   and row[25] > .15) else -100
+                copies = row[ACTION_DIM+STATE_DIM+11]
+                score = 40 + copies * 30 if (len(hero.board) == 7 and hero.gold >= 2
+                                                   and copies > .15) else -100
             elif action.kind == "REFRESH":
                 score = 5 if hero.gold >= 4 else -10
             else:
@@ -176,12 +236,21 @@ class Arena:
             return
         if action.kind == "BUY":
             ok = game.buy_from_tavern(hero, hero.tavern[action.index])
+        elif action.kind == "BUY_SPELL":
+            ok = game.buy_from_tavern(hero, hero.tavern[action.index])
         elif action.kind == "SELL":
             ok = game.sell_minion(hero, hero.board[action.index])
         elif action.kind == "PLAY":
-            ok = game.play_minion(hero, hero.hand[action.index])
+            ok = game.play_minion(hero, hero.hand[action.index], position=action.position)
+        elif action.kind == "PLAY_SPELL":
+            spell = hero.hand[action.index]
+            targets = self.spell_targets(game, hero, spell)
+            ok = game.play_spell(hero, spell, target=targets[0] if targets else None)
         elif action.kind == "UPGRADE":
             ok = game.upgrade_tavern(hero)
+        elif action.kind == "FREEZE":
+            game.freeze_tavern(hero)
+            ok = True
         elif action.kind == "REFRESH":
             game.refresh_tavern(hero)
             ok = True
@@ -235,6 +304,7 @@ class Arena:
                     if collect:
                         trajectories[seat].append(dict(x=rows, action=selected, teacher=teacher,
                                                        turn=game.turn, kind=actions[selected].kind,
+                                                       teacher_kind=actions[teacher].kind,
                                                        decision=dict(getattr(policy,'last_decision',{}))))
                     action = actions[selected]
                     self.execute(game, hero, action)

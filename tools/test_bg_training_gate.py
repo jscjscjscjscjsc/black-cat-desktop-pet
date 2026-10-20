@@ -3,13 +3,31 @@ import unittest
 import json
 from pathlib import Path
 import tempfile
+from unittest.mock import patch
 from core.bg_training_gate import compare
 from core.bg_lab_status import training_status
+from core.bg_selfplay import ENGINE_REVISION, PROFILE
+from tools import promote_bg_policy
 
 def rows(n,rank):
     return [dict(seed=100+i,seat=0,placements=[rank,1,2,3,5,6,7,8]) for i in range(n)]
 
 class GateTests(unittest.TestCase):
+    def test_promotion_rejects_failed_gate_and_marks_champion_offline_only(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder);checkpoint=root/'ppo.pt';checkpoint.write_bytes(b'weights')
+            import hashlib
+            digest=hashlib.sha256(b'weights').hexdigest();report=root/'eval.json';out=root/'champion'
+            base=dict(status='complete',profile=PROFILE,engine_revision=ENGINE_REVISION,
+                      checkpoint_sha256=digest)
+            report.write_text(json.dumps(dict(base,comparison=dict(lab_pass=False))),encoding='utf-8')
+            args=['promote','--report',str(report),'--checkpoint',str(checkpoint),'--output-dir',str(out)]
+            with patch('sys.argv',args),self.assertRaises(PermissionError):promote_bg_policy.main()
+            report.write_text(json.dumps(dict(base,comparison=dict(lab_pass=True))),encoding='utf-8')
+            with patch('sys.argv',args):promote_bg_policy.main()
+            manifest=json.loads((out/'manifest.json').read_text(encoding='utf-8'))
+            self.assertEqual(manifest['live_adapter'],'not enabled')
+
     def test_small_sample_cannot_pass(self):
         self.assertFalse(compare(rows(16,5),rows(16,3))['lab_pass'])
 

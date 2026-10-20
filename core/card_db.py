@@ -11,6 +11,7 @@ import os
 import re
 
 _DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'data', 'cards_zhcn.json')
+_CURRENT_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'data', 'bg_agent', 'cards_37.json')
 
 # 亡语召唤：召唤一只2/3并具有嘲讽的龟 / 召唤一个6/6并具有嘲讽的僵尸
 _RE_SUMMON = re.compile(r'召唤(?:一[只个])?(\d+)/(\d+)(?:并具有(?:<b>)?([^<。]+?)(?:</b>)?)?(?:的)?[^。]*[。]?')
@@ -59,6 +60,37 @@ def _load():
                 token['reborn'] = '复生' in kw
                 entry['deathrattle'] = token
         _CACHE[cid] = entry
+    # Overlay the pinned current-client BG definitions. This database is used
+    # for names, races and board summaries; it is not an executable ruleset.
+    try:
+        with open(_CURRENT_PATH, 'r', encoding='utf-8') as f:
+            current = json.load(f)
+        for cid, card in current.get('cards', {}).items():
+            if card.get('type') != 'minion':
+                continue
+            prior = _CACHE.get(cid, {})
+            entry = dict(prior)
+            entry['name'] = card.get('name') or entry.get('name') or cid
+            entry['race'] = card.get('race') or entry.get('race')
+            for source, target in (('attack', 'atk'), ('health', 'hp'), ('tier', 'tech_level')):
+                if isinstance(card.get(source), int):
+                    entry[target] = card[source]
+            if not entry.get('atk') and not entry.get('hp'):
+                continue
+            text = card.get('text') or card.get('text_en') or ''
+            entry.setdefault('deathrattle', None)
+            if '亡语' in text:
+                match = _RE_SUMMON.search(text)
+                if match:
+                    token = {'atk': int(match.group(1)), 'hp': int(match.group(2))}
+                    keywords = match.group(3) or ''
+                    token['taunt'] = '嘲讽' in keywords
+                    token['divine_shield'] = '圣盾' in keywords
+                    token['reborn'] = '复生' in keywords
+                    entry['deathrattle'] = token
+            _CACHE[cid] = entry
+    except (OSError, ValueError, TypeError):
+        pass
     return _CACHE
 
 
@@ -76,7 +108,7 @@ def race_of(card_id: str) -> str:
     e = _load().get(card_id)
     if not e or not e.get('race'):
         return ''
-    return {'BEAST': '野兽', 'MECH': '机械', 'MURLOC': '鱼人', 'DEMON': '恶魔',
+    return {'BEAST': '野兽', 'MECH': '机械', 'MECHANICAL': '机械', 'MURLOC': '鱼人', 'DEMON': '恶魔',
             'DRAGON': '龙', 'ELEMENTAL': '元素', 'NAGA': '娜迦', 'PIRATE': '海盗',
             'QUILBOAR': '野猪人', 'UNDEAD': '亡灵', 'ALL': '全种族',
             'TOTEM': '图腾', 'HYDRA': '双头蛇'}.get(e['race'], e['race'])

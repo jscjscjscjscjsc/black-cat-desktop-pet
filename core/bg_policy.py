@@ -8,7 +8,16 @@ import torch
 from torch import nn
 from torch.distributions import Categorical
 
-from core.bg_selfplay import ENGINE_REVISION, FEATURE_DIM, PROFILE
+from core.bg_selfplay import (ACTION_DIM, ENGINE_REVISION, FEATURE_DIM, KINDS,
+                              PROFILE, STATE_DIM)
+
+
+def safety_action(chosen, teacher, rows):
+    """Never end recruitment while the legal state has a minion to play."""
+    if (chosen == KINDS.index("END") and 0 <= teacher < len(rows)
+            and rows[teacher][KINDS.index("PLAY")] == 1.):
+        return teacher
+    return chosen
 
 
 class LabPolicy(nn.Module):
@@ -16,11 +25,12 @@ class LabPolicy(nn.Module):
         super().__init__()
         self.actor = nn.Sequential(nn.Linear(FEATURE_DIM, 64), nn.Tanh(),
                                    nn.Linear(64, 64), nn.Tanh(), nn.Linear(64, 1))
-        self.critic = nn.Sequential(nn.Linear(8, 64), nn.Tanh(), nn.Linear(64, 1))
+        self.critic = nn.Sequential(nn.Linear(STATE_DIM, 64), nn.Tanh(), nn.Linear(64, 1))
 
     def forward(self, x, mask):
         logits = self.actor(x).squeeze(-1).masked_fill(~mask, -1e9)
-        return Categorical(logits=logits), self.critic(x[:, 0, 6:14]).squeeze(-1)
+        return (Categorical(logits=logits),
+                self.critic(x[:, 0, ACTION_DIM:ACTION_DIM+STATE_DIM]).squeeze(-1))
 
     @classmethod
     def load(cls, path):
@@ -42,4 +52,4 @@ class LabPolicy(nn.Module):
         with torch.no_grad():
             dist, _ = self(torch.tensor([rows], dtype=torch.float32),
                            torch.ones(1, len(rows), dtype=torch.bool))
-            return int(dist.logits.argmax(-1).item())
+            return safety_action(int(dist.logits.argmax(-1).item()), teacher, rows)

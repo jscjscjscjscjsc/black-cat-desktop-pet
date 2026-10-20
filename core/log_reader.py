@@ -8,6 +8,7 @@
 import os
 import re
 import glob
+import hashlib
 
 _TAG_RE = re.compile(r' tag=(\w+) value=(\S+)')
 _FULL_RE = re.compile(r'FULL_ENTITY - Creating ID=(\d+) CardID=(\w+)')
@@ -74,11 +75,13 @@ _player_id_to_ent = {}   # PlayerID(controller) -> 玩家实体 EntityID
 _local_controller = None
 _last_offset = 0
 _initialized = False
+_game_serial = 0
+_game_token = ''
 
 
 def _reset():
     global _ents, _players, _hero_player, _hero_order, _player_order
-    global _player_id_to_ent, _local_controller, _last_offset, _initialized
+    global _player_id_to_ent, _local_controller, _last_offset, _initialized, _game_serial, _game_token
     _ents = {}
     _players = {}
     _hero_player = {}
@@ -88,6 +91,8 @@ def _reset():
     _local_controller = None
     _last_offset = 0
     _initialized = False
+    _game_serial = 0
+    _game_token = ''
 
 
 # 实体数量上限: 超过则清理非 PLAY 区实体, 防止开久了 _ents 无限增长
@@ -126,7 +131,7 @@ def _prune_ents():
 def _parse_chunk(lines):
     """解析一批日志行，更新全局状态"""
     global _ents, _players, _hero_player, _hero_order, _player_order
-    global _player_id_to_ent, _local_controller
+    global _player_id_to_ent, _local_controller, _game_serial, _game_token
     pending = None  # 挂起实体：FULL_ENTITY/SHOW_ENTITY/Player 的缩进 tag 块归属
     for ln in lines:
         tags = _TAG_RE.findall(ln)
@@ -151,6 +156,9 @@ def _parse_chunk(lines):
         if _GAME_RE.search(ln):
             eid = 0
             is_create = True
+            _game_serial += 1
+            _game_token = hashlib.sha256(
+                f'{os.path.abspath(LOG_PATH or "")}|{ln}'.encode()).hexdigest()[:24]
         elif eid is None:
             m = _GAME_ENTITY_CREATE_RE.search(ln)
             if m:
@@ -268,7 +276,8 @@ def read_current_board():
     mtime = os.path.getmtime(LOG_PATH)
     stale_min = ( _time.time() - mtime) / 60.0
     if stale_min > 15:
-        return {'active': False, 'reason': 'log_stale', 'stale_min': round(stale_min, 1)}
+        return {'active': False, 'reason': 'log_stale', 'stale_min': round(stale_min, 1),
+                'game_serial': _game_serial, 'game_key': _current_game_key()}
     if not _initialized:
         _init()
     size = os.path.getsize(LOG_PATH)
@@ -470,12 +479,15 @@ def _build_board():
                 # 名次近似：吃鸡=第1；出局=本局已出局玩家数（含自己，LOST 结算时含己方）
                 place = 1 if ps == 'WON' else max(1, _count_eliminated())
                 return {'active': False, 'reason': 'game_over', 'playstate': ps,
-                        'place': place, 'turn': game.get('TURN', 0)}
+                        'place': place, 'turn': game.get('TURN', 0),
+                        'game_serial': _game_serial, 'game_key': _current_game_key()}
     hp = hero.get('HEALTH', 0)
     armor = hero.get('ARMOR', 0)
     if not hp and armor:
         hp = armor  # 部分英雄血量存在 ARMOR
     return {
+        'game_serial': _game_serial,
+        'game_key': _current_game_key(),
         'tier': hero.get('PLAYER_TECH_LEVEL', hero.get('TECH_LEVEL', 0)),
         'gold': p_ent.get('RESOURCES', hero.get('RESOURCES', 0)),
         'hp': hp,
@@ -485,6 +497,14 @@ def _build_board():
         'theirs': theirs,
         'fresh': bool(mine),
     }
+
+
+def _current_game_key():
+    if not LOG_PATH:
+        return ''
+    if _game_token:
+        return _game_token
+    return hashlib.sha256(f'{os.path.abspath(LOG_PATH)}:{_game_serial}'.encode()).hexdigest()[:24]
 
 
 def format_board(board) -> str:

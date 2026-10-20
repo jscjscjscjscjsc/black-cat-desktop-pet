@@ -34,7 +34,8 @@ def main():
     parser.add_argument("--eval-games", type=int, default=16)
     parser.add_argument("--seed", type=int, default=1000)
     parser.add_argument("--max-seconds", type=int, default=600)
-    parser.add_argument('--expert-battles',help='Optional matching-profile DeepSeek trajectories; no extra API calls')
+    parser.add_argument('--expert-battles',nargs='+',default=[],
+                        help='Matching-profile DeepSeek trajectory files; no extra API calls')
     parser.add_argument("--worker", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
     if not (1 <= args.bc_games <= 100 and 0 <= args.rl_games <= 1000
@@ -59,7 +60,7 @@ def main():
     deadline = started + args.max_seconds
     import torch
     from torch import nn
-    from core.bg_policy import LabPolicy
+    from core.bg_policy import LabPolicy, safety_action
     torch.set_num_threads(2)
     torch.manual_seed(args.seed)
     rng = random.Random(args.seed)
@@ -83,6 +84,8 @@ def main():
                 x = torch.tensor([rows], dtype=torch.float32)
                 dist, value = model(x, torch.ones(1, len(rows), dtype=torch.bool))
                 action = dist.sample() if stochastic else dist.logits.argmax(-1)
+                if not stochastic:
+                    action = torch.tensor(safety_action(int(action.item()), teacher, rows))
                 if records is not None:
                     records.append((float(dist.log_prob(action)), float(value)))
                 return int(action.item())
@@ -130,8 +133,10 @@ def main():
     try:
         if args.expert_battles:
             from core.bg_expert_data import load_expert_samples
-            expert_samples, expert_info = load_expert_samples(args.expert_battles)
-            samples.extend(expert_samples)
+            expert_info=[]
+            for expert_path in args.expert_battles:
+                expert_samples,info=load_expert_samples(expert_path)
+                samples.extend(expert_samples);expert_info.append(info)
             metrics['expert_supervision'] = expert_info
         for i in range(args.bc_games):
             r = run([teacher_policy] * 8, args.seed + i, "imitation", True)
@@ -175,7 +180,7 @@ def main():
                     decisions += 1
                     action_counts[step["kind"]] += 1
                     disagreements += step["action"] != step["teacher"]
-                    avoidable_ends += (step["kind"] == "END" and step["x"][step["teacher"]][3] == 1.)
+                    avoidable_ends += (step["kind"] == "END" and step.get("teacher_kind") == "PLAY")
                 places.append(r["placements"][seat])
                 top4.append(top4_credit(r["placements"], seat))
             metrics["evaluations"][name] = dict(games=len(places), mean_placement=sum(places)/len(places),

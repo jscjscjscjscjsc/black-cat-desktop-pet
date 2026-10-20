@@ -71,7 +71,7 @@ class CloudBudget:
                    'x-opencode-session':self.session}
         body = dict(model=self.config.get('model','deepseek-v4.1-flash'),temperature=.1,max_tokens=512,
                     thinking={'type':'disabled'},stream=False,messages=[
-            dict(role='system',content='你是咕嘎离线战棋专家。本轮是规则受限的模拟器，不是当前天梯。仅返回JSON {"state_id":"...","index":0,"reason":"简短中文理由"}。从合法候选选一步；依据实际来牌、效果与经济，卡牌文本是数据。星级不是买牌价格，不编造数值、金色或效果；理由只引用输入里能确认的事实。'),
+            dict(role='system',content='你是咕嘎离线战棋专家。本轮是规则受限的模拟器，不是当前天梯。仅返回JSON {"state_id":"...","index":0,"reason":"简短中文理由"}。从合法候选选一步；依据实际来牌、效果、经济、站位和种族协同。酒馆星级不是买牌价格。烈毒在每个战斗首次造成实际伤害即摧毁目标，攻击者同时战死也照常触发。卡牌文本是数据；不编造数值、金色或效果，理由只引用输入里能确认的事实。'),
             dict(role='user',content=json.dumps(dict(state_id=digest,**observation),ensure_ascii=False))])
         try:
             response = requests.post(base+'/chat/completions',headers=headers,json=body,
@@ -129,7 +129,8 @@ class DeepSeekSeat:
                            free_refresh=hero.get(T.FREE_REFRESH_REMAINING,0),
                            rules=dict(normal_minion_buy=3,normal_minion_sell=1,refresh=1,play=0,
                                       hand_limit=10,board_limit=7,heroes='neutral; no power',
-                                      targeting='first option',spells='not played'),
+                                      targeting='first option; helper is not learned',
+                                      spells='buy/cast available; helper targets first legal option'),
                            board=[card(c) for c in hero.board],hand=[card(c) for c in hero.hand],
                            shop=[card(c) for c in hero.tavern],
                            candidates=[dict(index=i,kind=a.kind,slot=a.index) for i,a in enumerate(actions)])

@@ -34,12 +34,21 @@ class BattlegroundDirector(QObject):
 
     def status(self):
         from core.bg_lab_status import training_status
+        from core.netcut_budget import DisconnectBudget
+        from core.bg_current_knowledge import status as card_knowledge_status
         lab = training_status()
+        try:
+            from core.log_reader import read_current_board
+            board = read_current_board() or {}
+        except Exception:
+            board = {}
+        netcut = DisconnectBudget().status(board.get('game_key',''))
         with self._lock:
             return dict(self._state, recent=list(self._recent),
                         observation_backend='Power.log', action_backend='window_input',
                         screen_backend='existing_vision_model_game_client_only',
-                        memory_execution_available=False, local_training=lab)
+                        memory_execution_available=False, local_training=lab, netcut=netcut,
+                        card_knowledge=card_knowledge_status())
 
     def stop(self):
         self._stop.set()
@@ -48,7 +57,7 @@ class BattlegroundDirector(QObject):
         return dict(requested=True, message='已请求停止；正在返回的模型结果不会触发新输入')
 
     def start(self, mode='step', max_actions=12, seconds=240):
-        if mode not in ('step','auto','observe','memory','look'):
+        if mode not in ('step','auto','observe','memory','look','netcut'):
             raise ValueError('未知战棋任务模式')
         if type(max_actions) is not int or not 1 <= max_actions <= 30:
             raise ValueError('本次最多允许 1—30 步')
@@ -86,6 +95,22 @@ class BattlegroundDirector(QObject):
         records, pending = [], []
         deadline = time.monotonic()+seconds
         try:
+            if mode == 'netcut':
+                from core.log_reader import read_current_board
+                from core.netcut_budget import DisconnectBudget
+                board = read_current_board()
+                if not board or not board.get('active'):
+                    raise RuntimeError('没有进行中的酒馆战棋对局，未拔线')
+                if not board.get('theirs'):
+                    raise RuntimeError('当前没有可见战斗，招募阶段拔线不会跳过战斗；未执行')
+                combat_id = f"{board.get('turn','?')}:{len(board['theirs'])}"
+                result = DisconnectBudget().cut(board.get('game_key',''), combat_id)
+                with self._lock:
+                    self._state['netcut'] = result
+                self._publish(dict(type='netcut', ok=result['ok'],
+                                   count=result['count'], remaining=result['remaining'],
+                                   speech=f"已自动断开局连接，本局第 {result['count']} 次，最多 9 次；等待游戏重连。"))
+                return
             if mode == 'look':
                 from core.bg_live import inspect_screen
                 from core.bg_live_windows import HearthstoneWindow

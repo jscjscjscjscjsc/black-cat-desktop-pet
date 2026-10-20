@@ -472,7 +472,14 @@ class PetWindow(QWidget):
             QMenu::separator { height: 1px; background: #444; margin: 4px 8px; }
             QMenu::icon { padding-left: 4px; }
         """)
-        menu.addAction("⚡ 一键拔线（跳战斗动画，F1）").triggered.connect(self._netcut)
+        try:
+            from core import log_reader as _netcut_logs
+            from core.netcut_budget import DisconnectBudget as _NetcutBudget
+            _netcut_state = _NetcutBudget().status((_netcut_logs.read_current_board() or {}).get('game_key', ''))
+            _netcut_text = f"⚡ 自动拔线（本局 {_netcut_state['count']}/9，F1）"
+        except Exception:
+            _netcut_text = "⚡ 自动拔线（每局最多 9 次，F1）"
+        menu.addAction(_netcut_text).triggered.connect(self._netcut)
         menu.addAction("💬 对话 · 咕嘎智能体").triggered.connect(self._open_agent_chat)
         menu.addAction("🎙 长语音 · 边聊边执行").triggered.connect(self._open_agent_voice)
         talk_menu = menu.addMenu("🎙 原语音功能")
@@ -1186,9 +1193,10 @@ class PetWindow(QWidget):
                 f"咕嘎？自检有问题，详见 netcut_selftest.log（{first}）",
                 "sad", "shake")
 
-    def _netcut(self):
+    def _netcut(self, automatic=False, board=None):
         """强制断开炉石对局连接（跳战斗动画的时间技巧），需管理员权限"""
         import time as _time
+        from core.netcut_budget import DisconnectBudget
         now = _time.time()
         # 重连保护期：拔线后 30 秒内不执行，避免打断重连（不稳定主因）
         reconnecting = getattr(self, '_netcut_reconnect_until', 0)
@@ -1204,40 +1212,64 @@ class PetWindow(QWidget):
                 "咕嘎～刚拔过线，等 15 秒再拔！拔太频繁会被服务器判负的！",
                 "sad", "shake")
             return
-        # 每局拔线次数上限（服务器拒绝重连的硬限制）
-        n_cut = getattr(self, '_netcut_count', 0)
-        if n_cut >= 9:
-            self._say_with_expression(
-                "咕嘎～这局已经拔了 9 次了！再拔会被服务器判负，稳一点！",
-                "sad", "shake")
-            return
         # 时机检测：只在战斗中拔（对手可见 = 战斗已开始，结果已定）
         from core import log_reader
-        board = log_reader.read_current_board()
+        board = board or log_reader.read_current_board()
+        budget = DisconnectBudget()
+        game_key = board.get('game_key', '') if board else ''
+        if game_key and game_key != getattr(self, '_netcut_game_key', None):
+            self._netcut_game_key = game_key
+            self._netcut_reconnect_until = 0
+            self._last_netcut_t = 0
+        state = budget.status(game_key)
+        self._netcut_count = state['count']
+        if state['exhausted']:
+            if not automatic:
+                self._say_with_expression(
+                    "咕嘎～这局已经拔了 9 次了！已经达到硬上限，稳一点！",
+                    "sad", "shake")
+            return
+        if now < getattr(self, '_netcut_reconnect_until', 0) or state['cooldown_remaining'] > 0:
+            if not automatic:
+                self._say_with_expression("咕嘎～重连保护中，等几秒再拔～", "surprised", "peek")
+            return
         if board and board.get('active') and board.get('theirs'):
             pass  # 战斗中，OK
         elif board and board.get('active') and not board.get('theirs'):
-            self._say_with_expression(
-                "咕嘎～现在还在招募阶段，对手没开打，拔了也没用！等战斗开始再按！",
-                "tsundere", "tsundere")
+            if not automatic:
+                self._say_with_expression(
+                    "咕嘎～现在还在招募阶段，对手没开打，拔了也没用！等战斗开始再按！",
+                    "tsundere", "tsundere")
             return
         else:
-            self._say_with_expression(
-                "咕嘎？没检测到对局，开一把酒馆战棋再拔线！", "sad", "shake")
+            if not automatic:
+                self._say_with_expression(
+                    "咕嘎？没检测到对局，开一把酒馆战棋再拔线！", "sad", "shake")
             return
-        from core.netcut import force_disconnect_hearthstone
-        n, msg = force_disconnect_hearthstone()
-        # msg 语义：n>0 时是定位来源（'日志'/'端口'）；n==0 时是错误说明
-        if n > 0:
+        combat_id = f"{board.get('turn', '?')}:{len(board.get('theirs', []))}"
+        if automatic and combat_id in state.get('combat_ids', []):
+            return
+        try:
+            result = budget.cut(game_key, combat_id)
+        except RuntimeError as exc:
+            if not automatic:
+                self._say_with_expression(f"咕嘎？{exc}", "sad", "shake")
+            return
+        if result.get('ok'):
+            n, msg = result['closed'], result['source']
             self._last_netcut_t = now
-            self._netcut_count = n_cut + 1
+            self._netcut_count = result['count']
             self._netcut_reconnect_until = now + 30  # 重连保护期
             src = f"（按{msg}定位）" if msg else ""
             self._say_with_expression(
-                f"咕嘎～已断开 {n} 条对局连接{src}（本局第 {n_cut + 1} 次）！正在重连，别乱点～",
+                f"咕嘎～已断开 {n} 条对局连接{src}（本局第 {result['count']} 次，剩余 {result['remaining']} 次）！正在重连，别乱点～",
                 "playful", "bounce")
             self._watch_reconnect(0)
-        elif '管理员权限' in (msg or '') or 'NOT_ELEVATED' in (msg or ''):
+            return
+        msg = result.get('error', '')
+        if automatic:
+            return
+        if '管理员权限' in (msg or '') or 'NOT_ELEVATED' in (msg or ''):
             self._say_with_expression(
                 "咕嘎？企鹅没管理员权限，拔不了线！桌面有个"
                 "「修复拔线权限-右键管理员运行.bat」，右键管理员运行一次，"
@@ -1245,9 +1277,7 @@ class PetWindow(QWidget):
         elif msg:
             self._say_with_expression(f"咕嘎？{msg}", "sad", "shake")
         else:
-            # n==0 且无 msg：连接已消失（游戏自己重连了）→ 视为成功
-            self._say_with_expression(
-                "咕嘎～连接已经自己断开了，等重连就好～", "normal", "peek")
+            self._say_with_expression(f"咕嘎？{msg or '未找到可断开的对局连接'}", "sad", "shake")
 
     def _watch_reconnect(self, attempt: int):
         """拔线后轮询日志：确认重连成功（每 3 秒，最多 8 次）
@@ -1287,6 +1317,20 @@ class PetWindow(QWidget):
 
     def _auto_watch(self):
         """每 4 秒轮询日志：检测 招募→战斗 转换，自动给胜率+军师建议"""
+        try:
+            from core import log_reader
+            early_board = log_reader.read_current_board()
+            early_key = (early_board or {}).get('game_key', '')
+            if early_key and early_key != getattr(self, '_netcut_game_key', None):
+                self._netcut_game_key = early_key
+                self._netcut_reconnect_until = 0
+                self._last_netcut_t = 0
+                self._netcut_count = 0
+            if (getattr(self, '_auto_netcut_enabled', True) and early_board
+                    and early_board.get('active') and early_board.get('theirs')):
+                self._netcut(automatic=True, board=early_board)
+        except Exception:
+            pass
         if self._realtime_active():
             return
         import time as _time
@@ -1311,14 +1355,6 @@ class PetWindow(QWidget):
                 return
             in_combat = bool(board.get('theirs'))
             phase = 'combat' if in_combat else 'recruit'
-            # 拔线计数重置：从战斗/对局结束回到招募 = 新对局开始，重置拔线次数
-            # （不依赖 game_over 检测，因为 AI 忙时可能跳过 game_over 窗口）
-            if phase == 'recruit' and self._watch_phase in ('combat', 'gameover'):
-                old_count = getattr(self, '_netcut_count', 0)
-                if old_count > 0:
-                    self._netcut_count = 0
-                    self._netcut_reconnect_until = 0
-                    print(f'[拔线] 检测到新对局（{self._watch_phase}→recruit），拔线次数已重置（原{old_count}次）')
             if phase == 'combat':
                 self._last_combat_t = _time.time()
             self._watch_phase = phase
@@ -1330,9 +1366,6 @@ class PetWindow(QWidget):
     def _on_game_over(self, board):
         """对局结束（自动观战检测到）：记录战绩 → 按最近战绩调侃播报"""
         from core import match_history
-        # 对局结束 = 新对局即将开始: 重置每局拔线计数, 避免跨局累计
-        self._netcut_count = 0
-        self._netcut_reconnect_until = 0
         ps = board.get('playstate', '')
         result = 'win' if ps == 'WON' else ('concede' if ps == 'CONCEDED' else 'loss')
         h = match_history.record_result(result=result, place=board.get('place'),

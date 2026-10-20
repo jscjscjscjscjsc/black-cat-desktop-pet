@@ -50,7 +50,7 @@ def main():
     if args.cloud_calls:
         from core.bg_agent import load_config
         from core.bg_cloud_policy import CloudBudget, DeepSeekSeat
-        cloud = CloudBudget(load_config(),calls=args.cloud_calls,seconds=100,
+        cloud = CloudBudget(load_config(),calls=args.cloud_calls,seconds=240,
                             ledger=args.cloud_ledger)
     for i in range(args.games):
         policies = [DeepSeekSeat(cloud,seat) for seat in range(8)] if cloud else [policy]*8

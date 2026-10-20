@@ -98,6 +98,37 @@ class DirectorTests(unittest.TestCase):
         self.assertEqual(normalize_cards([card]),[dict(card_id='BG_TEST',entity_id=12,position=2)])
         self.assertIsNone(normalize_cards(None))
 
+    def test_netcut_requires_explicit_combat_and_respects_budget(self):
+        from core.netcut_budget import DisconnectBudget
+        with tempfile.TemporaryDirectory() as folder:
+            ledger=Path(folder)/'budget.json'
+            budget=DisconnectBudget(ledger,clock=lambda:1000.,disconnect=lambda:(1,'日志'))
+            self.assertTrue(budget.cut('game','3:2')['ok'])
+            with self.assertRaisesRegex(RuntimeError,'已经拔过'):
+                budget.cut('game','3:2')
+            director=BattlegroundDirector(session_factory=lambda cb:None)
+            with patch('core.log_reader.read_current_board',return_value=dict(active=True,theirs=[])):
+                director.start('netcut',seconds=10);director._worker.join(2)
+            self.assertFalse(director.status()['running'])
+
+    def test_netcut_combat_path_uses_shared_budget_and_emits_narration(self):
+        calls=[]
+        class FakeBudget:
+            def cut(self,game,combat):
+                calls.append((game,combat))
+                return dict(ok=True,count=1,remaining=8,closed=1,source='日志')
+            def status(self,game):
+                return dict(count=1,remaining=8,exhausted=False,combat_ids=['4:1'])
+        board=dict(active=True,theirs=[{'name':'X'}],turn=4,game_key='game-key')
+        director=BattlegroundDirector(session_factory=lambda cb:None)
+        with patch('core.log_reader.read_current_board',return_value=board), \
+             patch('core.netcut_budget.DisconnectBudget',FakeBudget):
+            director.start('netcut',seconds=10);director._worker.join(2)
+            state=director.status()
+        self.assertEqual(calls,[('game-key','4:1')])
+        self.assertTrue(any(e['type']=='netcut' for e in state['recent']))
+        self.assertEqual(state['netcut']['remaining'],8)
+
 
 class VoiceNoticeTests(unittest.TestCase):
     def engine(self):
