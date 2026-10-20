@@ -38,6 +38,21 @@ with tempfile.TemporaryDirectory() as folder,patch('core.keyboard_hook.KeyboardH
         assert pet._agent_bubble.isVisible()
         assert not voice._stop.is_set()
         ident=panel.active_id
+        pet._queue_voice_gesture('head_shake')
+        assert pet._pending_voice_gesture=='head_shake'
+        pet._on_realtime_speaking(True)
+        assert pet._anim2d.action=='head_shake' and pet._pending_voice_gesture is None
+        pet._on_realtime_speaking(False)
+        # A new spoken turn may interrupt playback without cancelling the task.
+        panel.busy=True;panel._voice_task=(voice,'pending-old')
+        voice._tasks['pending-old']='r-old'
+        voice._handle_event(dict(type='input_audio_buffer.speech_started'))
+        app.processEvents()
+        assert not panel.agent.cancel_event.is_set()
+        voice.task_requested.emit('progress-query','现在进度怎么样了')
+        voice.task_requested.emit('steer-query','完成以后再核对一次结果')
+        assert panel.agent.steering.get_nowait()=='完成以后再核对一次结果'
+        panel.busy=False
         voice._handle_event(dict(type='response.created',response=dict(id='r1')))
         voice._handle_event(dict(type='response.audio_transcript.delta',response_id='r1',delta='好呀，我在这里陪你。'))
         voice._handle_event(dict(type='response.audio_transcript.delta',response_id='r1',delta='窗口收起来也能边聊边做事。'))
@@ -72,6 +87,7 @@ with tempfile.TemporaryDirectory() as folder,patch('core.keyboard_hook.KeyboardH
         canvas.save(str(output))
         pet._agent_bubble.stop_button.click();app.processEvents()
         assert not panel.voice_active and voice._stop.is_set()
+        assert panel.agent.cancel_event.is_set(), 'End call must still stop its background task'
         assert not pet._agent_bubble.stop_button.isVisible()
         start.assert_called_once()
     # Exercise the actual worker dispatch with a real bounded command, offline model.

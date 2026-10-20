@@ -244,6 +244,10 @@ class AIChatEngine(QObject):
 
 def parse_reply(text: str):
     """解析 '表情|动作|台词' 或 '表情|台词' → (表情, 动作, 台词)"""
+    from core.embodiment import spoken_reply
+    clean_expr,clean_action,clean_text=spoken_reply(text)
+    if clean_action!='none' or clean_text!=text.strip():
+        return clean_expr,clean_action,clean_text or '咕嘎～'
     text = text.strip()
     parts = [p.strip() for p in text.split("|", 2)]
     expr, action, content = "normal", "none", text

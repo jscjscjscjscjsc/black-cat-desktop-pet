@@ -151,6 +151,7 @@ class PetWindow(QWidget):
         self._bubble_timer.timeout.connect(self._hide_bubble)
         self._chat_panel = None
         self._agent_panel = None
+        self._pending_voice_gesture = None
         from ui.speech_bubble import PetSpeechBubble
         self._agent_bubble = PetSpeechBubble(self)
         self._agent_bubble.clicked.connect(self._open_bubble_chat)
@@ -1010,6 +1011,9 @@ class PetWindow(QWidget):
     def _on_realtime_speaking(self, on):
         self._agent_bubble.set_speaking(on)
         if on:
+            if self._pending_voice_gesture:
+                gesture=self._pending_voice_gesture;self._pending_voice_gesture=None
+                self._perform_gesture(gesture)
             self._on_tts_started('')
         else:
             self._on_tts_finished()
@@ -1027,6 +1031,10 @@ class PetWindow(QWidget):
     }
 
     def _say_with_expression(self, text: str, expression: str = None, action: str = "none"):
+        from core.embodiment import spoken_reply
+        inferred_expression,inferred_action,text=spoken_reply(text)
+        if inferred_action!='none':action=inferred_action
+        if inferred_expression!='normal':expression=inferred_expression
         # 显示气泡
         self._bubble_text = text
         self._bubble_timer.start(4000)
@@ -1047,6 +1055,19 @@ class PetWindow(QWidget):
         # 播放 TTS 语音
         if not self._realtime_active():
             self._tts.speak(text)
+
+    def _perform_gesture(self,name):
+        # Gestures do not create speech or replace the current reply bubble.
+        self._anim2d.trigger_action(name)
+        if self._anim is not self._anim2d:
+            self._anim.trigger_action('tsundere' if name=='head_shake' else name)
+        self.update()
+
+    def _queue_voice_gesture(self,name):
+        if self._realtime_active() and self._realtime_voice.is_speaking:
+            self._perform_gesture(name)
+        else:
+            self._pending_voice_gesture=name
 
     def _on_tts_started(self, text: str):
         self._talk_timer.start()

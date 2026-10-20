@@ -37,6 +37,8 @@ class DesktopAccess:
     def enabled(self):
         try:
             return json.loads(self.state_path.read_text(encoding='utf-8')).get('full_access') is True
+        except FileNotFoundError:
+            return self.state_path==STATE
         except (OSError,ValueError,AttributeError):
             return False
 
@@ -48,7 +50,7 @@ class DesktopAccess:
 
     def status(self):
         return dict(full_access=self.enabled,administrator=bool(ctypes.windll.shell32.IsUserAnAdmin()) if os.name=='nt' else False,
-                    source_root=str(ROOT),command_timeout_max_seconds=60)
+                    source_root=str(ROOT),command_timeout_max_seconds=300)
 
     def execute(self, args, cancel=None):
         if not self.enabled:
@@ -96,8 +98,8 @@ class DesktopAccess:
     def run(self, command, cwd, seconds, cancel):
         if not command.strip() or len(command)>12000:
             raise ValueError('命令需要1—12000字')
-        if type(seconds) is not int or not 1<=seconds<=60:
-            raise ValueError('命令预算需要1—60秒')
+        if type(seconds) is not int or not 1<=seconds<=300:
+            raise ValueError('命令预算需要1—300秒')
         cwd=Path(cwd).expanduser().resolve(strict=True)
         if not cwd.is_dir():raise ValueError('工作目录不是文件夹')
         output_root=ROOT/'runtime/agent-jobs'

@@ -24,7 +24,7 @@ class SpriteAnimator:
         "playful":   "playful",
     }
 
-    ACTIONS = ("none", "bounce", "shake", "point", "peek", "tsundere")
+    ACTIONS = ("none", "bounce", "shake", "point", "peek", "tsundere", "head_shake", "nod", "tilt", "wave")
 
     def __init__(self, res_dir: str, display_width: int = 260):
         self._res_dir = res_dir
@@ -105,6 +105,7 @@ class SpriteAnimator:
         self._action_timer = 0.0
         self._action_phase = 0.0
         self._peek_side = 1
+        self.head_yaw = self.head_nod = self.head_tilt = 0.0
 
         # 眨眼 / 翅膀抖
         self._blink_countdown = random.uniform(2.5, 6.0)
@@ -259,6 +260,8 @@ class SpriteAnimator:
     # ==================== 动作控制 ====================
 
     def trigger_action(self, action: str):
+        from core.embodiment import ALIASES
+        action=ALIASES.get(action,action)
         if action in self.ACTIONS and action != "none":
             self.action = action
             self._action_timer = 0.0
@@ -401,8 +404,23 @@ class SpriteAnimator:
         self.anim_scale_x = 1.0
         self.anim_scale_y = 1.0
         self._point_active = 0.0
+        self.head_yaw = self.head_nod = self.head_tilt = 0.0
 
         if a == "none":
+            return
+
+        if a in ('head_shake','nod','tilt','wave'):
+            duration=1.35
+            phase=min(1,self._action_timer/duration)
+            if phase>=1:
+                self.action='none';return
+            envelope=math.sin(math.pi*phase)**.7
+            if a=='head_shake':self.head_yaw=math.sin(phase*math.pi*5)*envelope
+            elif a=='nod':self.head_nod=math.sin(phase*math.pi*4)*envelope
+            elif a=='tilt':self.head_tilt=envelope
+            elif a=='wave':
+                self.anim_rotate=3*math.sin(phase*math.pi*6)*envelope
+                self.anim_offset=QPointF(0,-2*envelope)
             return
 
         if a == "bounce":
@@ -509,12 +527,12 @@ class SpriteAnimator:
             old_pm = self._scaled.get(self._prev_expression, self._scaled["normal"])
             new_pm = self._scaled.get(self.expression, self._scaled["normal"])
             p.setOpacity(1.0 - self._transition)
-            p.drawPixmap(x, y, old_pm)
+            self._draw_sprite(p,x,y,old_pm)
             p.setOpacity(self._transition)
-            p.drawPixmap(x, y, new_pm)
+            self._draw_sprite(p,x,y,new_pm)
             p.setOpacity(1.0)
         else:
-            p.drawPixmap(x, y, self._src)
+            self._draw_sprite(p,x,y,self._src)
 
         # 说话动嘴：原画自带嘴部，不再叠画（避免黑线），只保留轻微点头真实感
 
@@ -523,6 +541,25 @@ class SpriteAnimator:
             self._draw_pointing_arm(p, x, y)
 
         p.restore()
+
+    def _draw_sprite(self,p,x,y,pm):
+        if max(abs(self.head_yaw),abs(self.head_nod),abs(self.head_tilt))<.001:
+            p.drawPixmap(x,y,pm);return
+        # Continuous mesh warp: head moves, deformation fades through the neck,
+        # and the lower body remains anchored. Uses the existing transparent art.
+        width,height=pm.width(),pm.height()
+        for row in range(0,height,2):
+            ratio=row/height
+            weight=1.0 if ratio<.39 else max(0,min(1,(.66-ratio)/.27))
+            weight=weight*weight*(3-2*weight)
+            if weight==0:
+                p.drawPixmap(QRectF(x,y+row,width,height-row),pm,QRectF(0,row,width,height-row))
+                break
+            dx=self.head_yaw*width*.038*weight+self.head_tilt*(height*.34-row)*.10*weight
+            dy=self.head_nod*height*.017*weight
+            scale=1-.055*abs(self.head_yaw)*weight
+            target=QRectF(x+dx+width*(1-scale)/2,y+row+dy,width*scale,min(3,height-row))
+            p.drawPixmap(target,pm,QRectF(0,row,width,min(3,height-row)))
 
     def _draw_shadow(self, p: QPainter, ox: int, oy: int):
         dw, dh = self._dw, self._dh

@@ -32,6 +32,8 @@ class AgentChatWindow(QDialog):
         self.agent = SelfAgent(self.bridge, self)
         self.agent.completed.connect(self._completed)
         self.agent.activity.connect(self._activity)
+        self.agent.progress.connect(self._task_progress)
+        self._last_task_notice=0
         self.setWindowTitle('咕嘎 · 智能体')
         self.resize(960, 720)
         self.setMinimumSize(740, 540)
@@ -341,11 +343,16 @@ class AgentChatWindow(QDialog):
         return super().eventFilter(obj, event)
 
     def send(self, text=None, record_user=True):
-        if self.busy:
-            return
         text = text if isinstance(text, str) else self.editor.toPlainText().strip()
         if not text.strip():
             return
+        if self.busy:
+            if any(word in text for word in ('停止任务','取消任务','停止执行','别执行了')):
+                self.agent.cancel();self.status.setText('已请求停止任务');self.editor.clear();return True
+            self.agent.steer(text)
+            if record_user:self.store.append(self.active_id,'user',text)
+            self.editor.clear();self.status.setText('追加要求已排队；当前操作结束后处理');self.render()
+            return True
         if len(text) > 16000:
             self.status.setText('单条消息最多 16000 字，请分段发送')
             return
@@ -362,7 +369,7 @@ class AgentChatWindow(QDialog):
         if self.store.conversation(self.active_id)['name'] == '新对话':
             self.store.rename('conversation', self.active_id, text.replace('\n', ' ')[:24])
         self.editor.clear()
-        self.send_button.setEnabled(False)
+        self.send_button.setEnabled(True)
         self.new_button.setEnabled(False)
         self.stop_button.setEnabled(True)
         self.status.setText('咕嘎正在思考…')
@@ -381,6 +388,15 @@ class AgentChatWindow(QDialog):
         if ident == self.active_id:
             self.status.setText(label + (' · 已完成' if result.get('ok') else ' · 未完成'))
             self.render()
+
+    def _task_progress(self,ident,event):
+        if ident!=self.active_id:return
+        summary=event.get('summary','正在执行任务')
+        self.status.setText(summary[:120])
+        import time
+        if self.voice_active and self.voice and time.monotonic()-self._last_task_notice>60 and self.busy:
+            self._last_task_notice=time.monotonic()
+            self.voice.notify_battleground('task-progress-'+event['task_id']+'-'+str(event.get('step',0)),summary)
 
     def _battleground_event(self, event):
         ident = event.get('conversation_id')
@@ -413,6 +429,10 @@ class AgentChatWindow(QDialog):
             self._voice_readback = True
             self.voice.resolve_task(voice_task[1], dict(ok=result['ok'],
                 answer=result.get('text', '') if result['ok'] else '', error=result.get('error', '')))
+        elif self.voice_active and self.voice:
+            self._voice_readback=True
+            self.voice.notify_battleground('task-finished-'+result.get('task_id',ident),
+                '任务执行结果：'+(result.get('text','') if result['ok'] else result.get('error','未完成')))
         if result['ok']:
             self.store.append(ident, 'assistant', result['text'])
             if not self.voice_active and not self.isVisible():
@@ -423,7 +443,8 @@ class AgentChatWindow(QDialog):
             else:
                 self.pet._anim.set_expression(result['expression'])
                 if result['action'] != 'none':
-                    self.pet._anim.trigger_action(result['action'])
+                    if self.voice_active:self.pet._queue_voice_gesture(result['action'])
+                    else:self.pet._perform_gesture(result['action'])
         else:
             self.store.append(ident, 'system', result.get('error', '本轮未完成'))
             self.status.setText(result.get('error', '本轮未完成'))
@@ -470,6 +491,7 @@ class AgentChatWindow(QDialog):
             self.voice.tasks_cancelled.connect(self._voice_cancelled)
             self.voice.transcript.connect(self._voice_transcript)
             self.voice.preview.connect(self._voice_preview)
+            self.voice.gesture.connect(self.pet._queue_voice_gesture)
             self.voice.status.connect(self.status.setText)
             self.voice.failed.connect(self._voice_error)
             self.voice.finished.connect(self._voice_finished)
@@ -490,6 +512,8 @@ class AgentChatWindow(QDialog):
             self.voice.start(cfg)
         else:
             self.voice_active = False
+            self.pet._pending_voice_gesture=None
+            self.agent.cancel()
             self.runtime.battleground.stop()
             if self.voice:
                 self.voice.stop()
@@ -516,7 +540,15 @@ class AgentChatWindow(QDialog):
         if not self.voice_active or self.sender() is not self.voice:
             return
         if self.busy:
-            self.voice.resolve_task(call_id, dict(ok=False, error='前一轮任务正在处理或停止，请稍后再问；不要重复执行'))
+            if any(word in request for word in ('停止任务','取消任务','停止执行','别执行了')):
+                self.agent.cancel()
+                self.voice.resolve_task(call_id,dict(ok=True,answer='已请求停止任务；已完成的操作保留在记录中。'))
+            elif any(word in request for word in ('进度','进展','做到哪','怎么样了','在做什么')):
+                state=self.agent.task_status()
+                self.voice.resolve_task(call_id,dict(ok=True,answer=state.get('summary','任务正在执行')+'；已完成工具操作'+str(len(state.get('events',[])))+'次。'))
+            else:
+                self.agent.steer(request)
+                self.voice.resolve_task(call_id,dict(ok=True,answer='收到追加要求，当前操作结束后会一起处理。'))
             return
         self._voice_task = (self.voice, call_id)
         messages = self.store.messages(self.active_id, 1)
@@ -528,15 +560,21 @@ class AgentChatWindow(QDialog):
     def _voice_cancelled(self):
         if self._voice_task:
             self._voice_task = None
-            self.agent.cancel()
+            # Speech interruption stops old playback, not a still-authorized task.
+            # Explicit stop/end-call/shutdown still cancels the worker.
+            if not self.voice_active:self.agent.cancel()
 
     def _voice_preview(self, text):
         if self.voice_active and self.sender() is self.voice:
-            self.pet._show_agent_bubble(text,self.active_id)
+            from core.embodiment import spoken_reply
+            self.pet._show_agent_bubble(spoken_reply(text)[2],self.active_id)
 
     def _voice_transcript(self, who, text):
         if not self.voice_active or self.sender() is not self.voice:
             return
+        if who!='饲养员':
+            from core.embodiment import spoken_reply
+            _,_,text=spoken_reply(text)
         if who == '饲养员':
             self._voice_readback = False
             self.store.append(self.active_id, 'user', text)

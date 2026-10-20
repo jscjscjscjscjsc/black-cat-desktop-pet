@@ -13,12 +13,12 @@
 
 ## 完整访问
 
-软件权限窗口新增完整访问开关。本机按用户要求开启；发布源码默认关闭，设置文件在被 Git 忽略的 `runtime/chat/local_access.json`。
+软件权限窗口提供完整访问开关。本机按用户要求开启；2026-10-20起默认开启，可手动关闭，设置文件在被 Git 忽略的 `runtime/chat/local_access.json`。
 
 - 发现开始菜单、桌面快捷方式及注册表 App Paths，按精确名称启动，也接受存在的 exe/lnk 绝对路径。
 - 模型可用 `local_computer` 列目录、读取文本、写文件、运行 PowerShell。
 - `write` 在覆盖已有文件前备份到 `runtime/self-updates/`，Python/JSON 在写入前检查语法；修改 Python 模块需重启生效。
-- 命令在工作线程执行，单次最多 60 秒，Windows Job Object 清理该命令的子进程，支持取消、超时和输出量限制。启动持续运行的软件应使用 `applications`。
+- 命令在工作线程执行，单次最多 300 秒，Windows Job Object 清理该命令的子进程，支持取消、超时和输出量限制。启动持续运行的软件应使用 `applications`。
 - 完整访问模式允许调用已配置的 MCP；未配置的软件接口不会凭空出现。文件读取、命令输出与工具参数日志进行常见密钥脱敏。
 - 实际权限继承咕嘎进程；此改动没有调整 UAC、系统安全设置或提升当前测试进程权限。
 

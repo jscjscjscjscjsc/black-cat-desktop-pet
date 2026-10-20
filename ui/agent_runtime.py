@@ -61,7 +61,8 @@ class AppRuntime:
                         authorized_apps=list(self.apps.entries()),
                         battleground=self.battleground.status(),
                         local_access=self.apps.access.status(),
-                        capabilities=['pet_control', 'workspace', 'applications', 'self_ask', 'ecosystem','battleground','local_computer'],
+                        task=self.panel.agent.task_status(),
+                        capabilities=['pet_control', 'workspace', 'applications', 'self_ask', 'ecosystem','battleground','local_computer','computer','task_plan'],
                         scope='本机能力由完整访问开关控制；继承咕嘎进程实际Windows权限')
         if name == 'pet_control':
             return self._pet(args)
@@ -91,9 +92,9 @@ class AppRuntime:
             pet._reset_pos()
         elif action == 'animate':
             name = args.get('name', 'bounce')
-            if name not in ('bounce', 'shake', 'point', 'peek', 'tsundere'):
+            if name not in ('bounce', 'shake', 'point', 'peek', 'tsundere','head_shake','nod','tilt','wave'):
                 raise ValueError('未知动画')
-            pet._say_with_expression('', 'happy', name)
+            pet._perform_gesture(name)
         elif action == 'interact':
             name = args.get('name', '')
             if name not in ('feed', 'play', 'pet', 'sleep', 'dance'):

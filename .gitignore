@@ -54,5 +54,6 @@ runtime/bg-lab/
 runtime/netcut-budget.json
 runtime/self-updates/
 runtime/agent-jobs/
+runtime/agent-tasks/
 runtime/chat/
 mcp_servers.json
