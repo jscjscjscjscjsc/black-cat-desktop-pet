@@ -29,7 +29,7 @@ def step():
         assert observation['_image_url'].startswith('data:image/jpeg;base64,')
         def click(widget):
             center=widget.mapToGlobal(widget.rect().center())
-            control.execute(dict(action='click',observation_id=token,x=center.x(),y=center.y()))
+            control.execute(dict(action='click',observation_id=token,coordinate_space='desktop',x=center.x(),y=center.y()))
         if state[0]==0:click(edit)
         elif state[0]==1:control.execute(dict(action='type',observation_id=token,text='咕嘎中文输入 7316'))
         elif state[0]==2:

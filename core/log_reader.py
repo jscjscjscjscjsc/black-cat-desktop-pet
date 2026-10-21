@@ -469,6 +469,12 @@ def _build_board():
             if ge.get('CARDTYPE') == 'GAME' and ge.get('TURN'):
                 game = ge
                 break
+    # FINAL_GAMEOVER is authoritative even if a player entity still carries
+    # PLAYING during the result screen. Do not expose a finished match as live.
+    if game.get('STEP') in ('FINAL_GAMEOVER', 'FINAL_WRAPUP'):
+        return {'active': False, 'reason': 'game_over', 'playstate': 'FINAL_GAMEOVER',
+                'place': _count_eliminated() + 1, 'turn': game.get('TURN', 0),
+                'game_serial': _game_serial, 'game_key': _current_game_key()}
     # ---- 对局是否真的在进行：玩家 PLAYSTATE 结束状态检测 ----
     if my_controller is not None:
         p_eid2 = _player_id_to_ent.get(my_controller)

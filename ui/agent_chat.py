@@ -1,6 +1,7 @@
 """Guga's floating workspace: projects, durable chats, voice and observable self-control."""
 import html
 import json
+import time
 
 from PyQt5.QtCore import Qt, QEvent, QTimer
 from PyQt5.QtGui import QFont, QPixmap
@@ -34,6 +35,12 @@ class AgentChatWindow(QDialog):
         self.agent.activity.connect(self._activity)
         self.agent.progress.connect(self._task_progress)
         self._last_task_notice=0
+        self._task_summary='正在规划第一步，尚未修改目标文件'
+        self._task_started=0
+        self._task_feedback_sequence=0
+        self._task_heartbeat_timer=QTimer(self)
+        self._task_heartbeat_timer.setInterval(1000)
+        self._task_heartbeat_timer.timeout.connect(self._task_heartbeat)
         self.setWindowTitle('咕嘎 · 智能体')
         self.resize(960, 720)
         self.setMinimumSize(740, 540)
@@ -373,6 +380,10 @@ class AgentChatWindow(QDialog):
         self.new_button.setEnabled(False)
         self.stop_button.setEnabled(True)
         self.status.setText('咕嘎正在思考…')
+        self._task_started=time.monotonic()
+        self._last_task_notice=self._task_started
+        self._task_summary='正在规划第一步，尚未修改目标文件'
+        self._task_heartbeat_timer.start()
         self.refresh_tree()
         self.render()
         return True
@@ -392,11 +403,22 @@ class AgentChatWindow(QDialog):
     def _task_progress(self,ident,event):
         if ident!=self.active_id:return
         summary=event.get('summary','正在执行任务')
+        self._task_summary=summary
         self.status.setText(summary[:120])
-        import time
-        if self.voice_active and self.voice and time.monotonic()-self._last_task_notice>60 and self.busy:
-            self._last_task_notice=time.monotonic()
-            self.voice.notify_battleground('task-progress-'+event['task_id']+'-'+str(event.get('step',0)),summary)
+        if self.busy and time.monotonic()-self._task_started>3 and not self.isVisible():
+            if not (self.voice_active and self.voice and self.voice.is_speaking):self.pet._show_agent_bubble(summary,ident)
+
+    def _task_heartbeat(self):
+        if not self.busy:
+            self._task_heartbeat_timer.stop();return
+        if time.monotonic()-self._last_task_notice<12:return
+        self._last_task_notice=time.monotonic()
+        self._task_feedback_sequence+=1
+        elapsed=int(time.monotonic()-self._task_started) if self._task_started else 0
+        summary=f'已运行 {elapsed} 秒，还在处理：'+self._task_summary[:90]+'。你可以补充要求，或说停止任务。'
+        self.pet._show_agent_bubble(summary,self.active_id)
+        if self.voice_active and self.voice:
+            self.voice.notify_battleground('task-update-'+str(self._task_feedback_sequence),summary)
 
     def _battleground_event(self, event):
         ident = event.get('conversation_id')
@@ -417,6 +439,7 @@ class AgentChatWindow(QDialog):
 
     def _completed(self, result):
         self.busy = False
+        self._task_heartbeat_timer.stop()
         self.send_button.setEnabled(True)
         self.new_button.setEnabled(not self.voice_active)
         self.stop_button.setEnabled(False)
@@ -556,6 +579,16 @@ class AgentChatWindow(QDialog):
         if not self.send(request, record_user=record_user):
             self._voice_task = None
             self.voice.resolve_task(call_id, dict(ok=False, error=self.status.text()))
+        else:
+            from core.task_feedback import acknowledgement
+            ack=acknowledgement(request)
+            # Close the speech FC immediately; execution remains in the worker.
+            # Otherwise pending _tasks blocks every queued progress narration.
+            self._voice_task=None
+            self._voice_readback=True
+            self.voice.resolve_task(call_id,dict(ok=True,answer=ack,execution_pending=True))
+            self.pet._show_agent_bubble(ack,self.active_id)
+            self.store.append(self.active_id,'system','任务已接收：'+ack)
 
     def _voice_cancelled(self):
         if self._voice_task:
@@ -594,6 +627,7 @@ class AgentChatWindow(QDialog):
                 self.status.setText('通话已结束 · 阿里语音连接已关闭')
 
     def shutdown(self):
+        self._task_heartbeat_timer.stop()
         self.runtime.battleground.stop()
         self.agent.cancel()
         self.voice_button.setChecked(False)

@@ -2,6 +2,7 @@
 import tempfile
 from pathlib import Path
 import unittest
+from unittest.mock import patch
 from core.netcut_budget import DisconnectBudget, MAX_CUTS
 from core import log_reader
 
@@ -20,6 +21,17 @@ class BudgetTests(unittest.TestCase):
             self.assertNotEqual(first,log_reader._current_game_key())
         finally:
             log_reader.LOG_PATH=original;log_reader._reset()
+
+    def test_final_gameover_is_never_reported_as_live(self):
+        entities={0:{'CARDTYPE':'GAME','TURN':32,'STEP':'FINAL_GAMEOVER'},
+                  14:{'CARDTYPE':'PLAYER','CONTROLLER':5,'HERO_ENTITY':113,'PLAYSTATE':'PLAYING'},
+                  113:{'CARDTYPE':'HERO','CONTROLLER':5,'ZONE':'PLAY','HEALTH':30,'ARMOR':0}}
+        with patch.multiple(log_reader,_ents=entities,_hero_order=[113],_hero_player={113:5},
+                            _player_id_to_ent={5:14},_local_controller=5,_players={},
+                            _player_order=[],LOG_PATH='C:/synthetic/Power.log'):
+            board=log_reader._build_board()
+        self.assertFalse(board['active'])
+        self.assertEqual(board['reason'],'game_over')
 
     def test_ninth_cut_allowed_and_tenth_blocked_across_restart(self):
         with tempfile.TemporaryDirectory() as folder:

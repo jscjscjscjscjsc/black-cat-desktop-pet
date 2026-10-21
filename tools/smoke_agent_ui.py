@@ -105,7 +105,9 @@ with tempfile.TemporaryDirectory() as folder, patch('core.keyboard_hook.Keyboard
                     panel.voice._process_command(panel.voice._commands.get_nowait())
                 packet = native_send.call_args_list[0].args[0]
                 assert packet['item']['call_id'] == 'voice-c1'
-                assert json.loads(packet['item']['output'])['answer'] == 'DeepSeek 测试答案：5。'
+                ack=json.loads(packet['item']['output'])
+                assert ack['execution_pending'] is True and '开始处理' in ack['answer']
+                assert any('DeepSeek 测试答案：5。' in speech for speech,_ in panel.voice._notices), 'Final answer must be queued separately after immediate acknowledgement'
         assert panel.close_button.isVisible()
         panel.close_button.click()
         assert not panel.isVisible()

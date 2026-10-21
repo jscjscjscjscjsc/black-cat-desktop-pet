@@ -114,7 +114,8 @@ class DesktopAccess:
                     limits=win32job.QueryInformationJobObject(job,win32job.JobObjectExtendedLimitInformation)
                     limits['BasicLimitInformation']['LimitFlags'] |= win32job.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
                     win32job.SetInformationJobObject(job,win32job.JobObjectExtendedLimitInformation,limits)
-                    proc=subprocess.Popen(['powershell.exe','-NoProfile','-NonInteractive','-Command',command],
+                    prefix='[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false); $OutputEncoding = [Console]::OutputEncoding; '
+                    proc=subprocess.Popen(['powershell.exe','-NoProfile','-NonInteractive','-Command',prefix+command],
                         cwd=str(cwd),stdin=subprocess.DEVNULL,stdout=stdout,stderr=stderr,
                         creationflags=subprocess.CREATE_NO_WINDOW)
                     win32job.AssignProcessToJobObject(job,int(proc._handle))

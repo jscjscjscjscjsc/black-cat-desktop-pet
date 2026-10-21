@@ -20,6 +20,11 @@ from core.computer_control import ComputerControl
 from core.desktop_access import DesktopAccess
 
 class UpgradeTests(unittest.TestCase):
+    def test_task_ack_is_short_and_never_claims_completion(self):
+        from core.task_feedback import acknowledgement,tool_feedback
+        ack=acknowledgement('用户希望我在Trae的文件读写.py文件中编写冒泡排序，确保写入正确位置。')
+        self.assertIn('文件读写.py',ack);self.assertIn('开始',ack);self.assertNotIn('已完成',ack);self.assertLess(len(ack),85)
+        self.assertIn('没有完成',tool_feedback('local_computer',{'action':'run'},{'ok':False}))
     def test_directions_removed_but_normal_speech_kept(self):
         self.assertEqual(spoken_reply('咕嘎|摇头|这个需要先看屏幕。'),('normal','head_shake','这个需要先看屏幕。'))
         self.assertEqual(spoken_reply('（点头）好呀。')[1:],('nod','好呀。'))
@@ -56,6 +61,28 @@ class UpgradeTests(unittest.TestCase):
             with self.assertRaises(ValueError):control.execute(dict(action='type',text='must not type'))
             cancel=threading.Event();cancel.set()
             with self.assertRaises(RuntimeError):control.execute(dict(action='windows'),cancel)
+
+    def test_screenshot_coordinates_map_to_physical_desktop(self):
+        import time,ctypes
+        from types import SimpleNamespace
+        control=ComputerControl(SimpleNamespace(enabled=True))
+        control.observation=dict(id='fresh',hwnd=777,rect=(0,0,2560,1504),image_size=(1600,940),time=time.monotonic())
+        with (patch('win32gui.GetForegroundWindow',return_value=777),patch('win32gui.GetWindowRect',return_value=(0,0,2560,1504)),
+              patch.object(ctypes.windll.user32,'SetCursorPos') as move):
+            control._execute(dict(action='move',observation_id='fresh',x=800,y=300))
+            move.assert_called_once_with(1280,480)
+
+    def test_uia_fast_path_uses_control_pattern_and_requires_verification(self):
+        from types import SimpleNamespace
+        class Access:
+            enabled=True
+            def run(self,*args,**kwargs):
+                return dict(exit_code=0,stdout='{"name":"保存","id":"Save","type":"ControlType.Button","enabled":true,"left":1,"top":2,"right":40,"bottom":20,"performed":true,"method":"InvokePattern"}')
+        control=ComputerControl(Access())
+        with patch('win32gui.IsWindow',return_value=True),patch('win32gui.GetForegroundWindow',return_value=9):
+            result=control.execute(dict(action='uia',hwnd=9,uia_name='保存',uia_operation='invoke'))
+        self.assertTrue(result['input_sent']);self.assertTrue(result['needs_observe'])
+        self.assertEqual(result['method'],'InvokePattern')
 
     def test_more_than_old_six_rounds_and_steering(self):
         class Bridge:
