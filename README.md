@@ -7,6 +7,8 @@
 
 长语音的时长、上下文、打断、断线、额度与任务执行边界见 [实时语音能力边界](docs/realtime-voice-boundaries.md)；Computer Use 各路线和 UIA、DOM、内存在自动化中的作用见 [Computer Use 路线与边界](docs/computer-use-landscape.md)。
 
+首次实时语音使用前运行 `录入主人声音.bat`；DSH 长任务 sidecar 的安装、登录和事件协议见 [DSH sidecar 接入](docs/dsh-sidecar.md)。
+
 ## 功能概览
 
 新增：[咕嘎智能体与个人软件生态](docs/agent-ecosystem.md)。右键“对话”打开项目/会话悬浮窗；“长语音 · 边聊边执行”使用现有 DeepSeek 模型调用自身工具、打开用户授权的软件，并通过双向 stdio MCP 接入个人软件生态。

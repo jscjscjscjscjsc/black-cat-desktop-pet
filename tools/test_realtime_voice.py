@@ -20,7 +20,7 @@ from ui.voice_dialog import VoiceSettingsDialog, VoiceCallDialog
 
 APP = QApplication.instance() or QApplication([])
 CFG = dict(DEFAULTS, provider='bailian', workspace_id='test-space', api_key='test-credential', headphones=True,
-           free_quota_confirmed_model=DEFAULTS['model'], free_quota_confirmed_provider='bailian')
+           free_quota_confirmed_model=DEFAULTS['model'], free_quota_confirmed_provider='bailian', owner_only=False)
 
 
 class Stream:

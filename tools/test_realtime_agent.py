@@ -27,7 +27,7 @@ class RealtimeAgentTests(unittest.TestCase):
     @staticmethod
     def call_event(call_id='c1', response_id='r1'):
         return dict(type='response.function_call_arguments.done', response_id=response_id,
-                    call_id=call_id, name='ask_deepseek', arguments=json.dumps({'request': '打开已授权的记事本'}))
+                    call_id=call_id, name='ask_deepseek', arguments=json.dumps({'request': '检查当前记事本窗口状态'}))
 
     def test_qwen_voice_config_preserved_with_single_delegate_tool(self):
         engine = self.engine()
@@ -39,6 +39,17 @@ class RealtimeAgentTests(unittest.TestCase):
         self.assertEqual(settings['tools'][0]['name'], 'ask_deepseek')
         self.assertEqual(settings['tool_choice'], 'auto')
 
+    def test_stop_command_is_local_cancels_audio_and_deduplicates(self):
+        engine=self.engine();commands=[];engine.fast_command.connect(commands.append)
+        engine._handle_event(dict(type='response.created',response=dict(id='r0')))
+        with patch.object(engine,'_send') as send,patch.object(engine,'_record_usage'):
+            engine._handle_event(dict(type='conversation.item.input_audio_transcription.completed',transcript='停止对话'))
+            event=dict(type='response.function_call_arguments.done',response_id='r1',call_id='fast',
+                       name='ask_deepseek',arguments=json.dumps({'request':'停止对话'}))
+            engine._handle_event(event)
+        self.assertEqual([c['action'] for c in commands],['stop_call'])
+        self.assertTrue(any(c.args[0].get('type')=='response.cancel' for c in send.call_args_list))
+
     def test_tool_deduplicates_across_all_native_events(self):
         engine = self.engine()
         calls = []
@@ -49,7 +60,7 @@ class RealtimeAgentTests(unittest.TestCase):
         engine._handle_event(dict(type='response.output_item.done', response_id='r1', item=item))
         with patch.object(engine, '_record_usage'):
             engine._handle_event(dict(type='response.done', response=dict(id='r1', output=[item])))
-        self.assertEqual(calls, [('c1', '打开已授权的记事本')])
+        self.assertEqual(calls, [('c1', '检查当前记事本窗口状态')])
 
     def test_transcription_does_not_execute_a_task(self):
         engine = self.engine()

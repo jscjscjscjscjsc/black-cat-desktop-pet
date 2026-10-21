@@ -23,7 +23,8 @@ DEFAULTS = dict(provider='qianwen', model='qwen-audio-3.1-realtime-plus', region
                 workspace_id='', api_key='', voice='longanqian_v3.1', headphones=False,
                 silence_duration_ms=1000, max_call_minutes=240,
                 idle_minutes=10, input_device=None, output_device=None,
-                free_only=True, free_quota_confirmed_model='', free_quota_confirmed_provider='')
+                free_only=True, free_quota_confirmed_model='', free_quota_confirmed_provider='',
+                owner_only=True, owner_threshold=None)
 PERSONA = '''你是咕嘎，一只娇憨、调皮但体贴的小企鹅桌宠。用自然普通话与饲养员聊天，
 自称本鹅，偶尔说咕嘎。认真倾听长段表达，不催促，不把每个问题都拐到游戏。
 默认用简洁口语回答，需要讲解时可以详细展开。不要读表情标签、动作标签、竖线或Markdown。
@@ -164,6 +165,8 @@ class RealtimeVoice(QObject):
         self._usage_rounds = 0
         self._usage_missing = 0
         self._usage_started = ''
+        self._speaker_gate = None
+        self._speaker_state = None
 
     @property
     def active(self):
@@ -186,6 +189,11 @@ class RealtimeVoice(QObject):
                         self._cfg.get('free_quota_confirmed_provider') != self._cfg.get('provider', 'qianwen')):
                     raise ValueError('尚未确认所选平台该模型的“免费额度用尽即停”保护，已阻止联网调用')
             import sounddevice, websocket  # noqa: F401
+            if self._cfg.get('owner_only', True):
+                from core.speaker_gate import SpeakerGate
+                self._speaker_gate = SpeakerGate(threshold=self._cfg.get('owner_threshold'),emit=self._speaker_output)
+            else:
+                self._speaker_gate = None
         except Exception as exc:
             self.last_error = str(exc)
             self.failed.emit(str(exc))
@@ -205,6 +213,9 @@ class RealtimeVoice(QObject):
         """UI never waits for network close; worker owns cleanup."""
         self._stop.set()
         self._pcm.clear()
+        if self._speaker_gate is not None:
+            self._speaker_gate.close()
+        self._speaker_gate = None
         ws = self._ws
         if ws:
             # shutdown wakes recv without a close-handshake wait.
@@ -249,6 +260,16 @@ class RealtimeVoice(QObject):
         gated = self._muted or (not self._cfg.get('headphones') and
                                (self._generating or self._playing or time.monotonic() < self._echo_until))
         raw = bytes(len(indata)) if gated else bytes(indata)
+        if not gated and self._speaker_gate is not None:
+            self._speaker_gate.submit(raw)
+            state = self._speaker_gate.state
+            if state != self._speaker_state:
+                self._speaker_state = state
+                if state == 'rejected':
+                    self.status.emit('检测到非主人声音，已丢弃且未发送到云端')
+                elif state == 'owner':
+                    self.status.emit('主人声纹已确认')
+            return
         now = time.monotonic()
         if now - self._last_level_at >= 0.1:
             self._last_level_at = now
@@ -264,6 +285,14 @@ class RealtimeVoice(QObject):
                 self._input.put_nowait(raw)
             except (queue.Empty, queue.Full):
                 pass
+
+    def _speaker_output(self,raw):
+        if self._stop.is_set():return
+        try:self._input.put_nowait(raw)
+        except queue.Full:
+            try:
+                self._input.get_nowait();self._input.put_nowait(raw)
+            except (queue.Empty,queue.Full):pass
 
     def _playback(self, outdata, frames, timing, status):
         with self._state_lock:

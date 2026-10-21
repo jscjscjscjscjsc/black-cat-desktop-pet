@@ -78,6 +78,12 @@ class VoiceSettingsDialog(QDialog):
         tip = QLabel('外放时，咕嘎说话期间暂停收音以避免回声；可用“打断”按钮。\n耳机模式没有软件回声消除，建议佩戴耳机。')
         tip.setWordWrap(True)
         layout.addWidget(tip)
+        self.owner_only = QCheckBox('仅主人声音有效：其他声音不发送到云端')
+        self.owner_only.setChecked(cfg.get('owner_only', True))
+        form.addRow('主人门禁', self.owner_only)
+        owner_tip = QLabel('首次使用请双击项目根目录“录入主人声音.bat”，录入三段语音。声纹保存在本地 runtime/，录音不上传。')
+        owner_tip.setWordWrap(True)
+        layout.addWidget(owner_tip)
         self.input_device = QComboBox()
         self.output_device = QComboBox()
         for combo in (self.input_device, self.output_device):
@@ -139,6 +145,7 @@ class VoiceSettingsDialog(QDialog):
                    silence_duration_ms=self.silence.value(), max_call_minutes=self.duration.value(),
                    idle_minutes=self.idle.value(), input_device=self.input_device.currentData(),
                    output_device=self.output_device.currentData(), free_only=True,
+                   owner_only=self.owner_only.isChecked(),
                    free_quota_confirmed_model=self.model.currentText() if self.free_guard.isChecked() else '',
                    free_quota_confirmed_provider=self.provider.currentData() if self.free_guard.isChecked() else '')
         try:

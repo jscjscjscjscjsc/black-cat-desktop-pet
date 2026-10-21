@@ -56,4 +56,5 @@ runtime/self-updates/
 runtime/agent-jobs/
 runtime/agent-tasks/
 runtime/chat/
+resources/models/speaker/*.onnx
 mcp_servers.json

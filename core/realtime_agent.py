@@ -6,6 +6,7 @@ import time
 
 from PyQt5.QtCore import pyqtSignal
 from core.realtime_voice import RealtimeVoice, session_settings
+from core.fast_commands import match as match_fast_command
 
 
 DELEGATE_TOOL = dict(type='function', name='ask_deepseek',
@@ -37,6 +38,7 @@ class AgentRealtimeVoice(RealtimeVoice):
     tasks_cancelled = pyqtSignal()
     preview = pyqtSignal(str)
     gesture = pyqtSignal(str)
+    fast_command = pyqtSignal(object)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -54,6 +56,13 @@ class AgentRealtimeVoice(RealtimeVoice):
         self._preview_text = ''
         self._preview_channel = None
         self._preview_gesture = False
+        self._fast_seen = deque(maxlen=32)
+
+    def _claim_fast(self,text):
+        now=time.monotonic()
+        self._fast_seen=deque((value,stamp) for value,stamp in self._fast_seen if now-stamp<2.0)
+        if any(value==text for value,_ in self._fast_seen):return False
+        self._fast_seen.append((text,now));return True
 
     def notify_battleground(self, event_id, speech):
         """Queue narration in the existing call, never open another speech connection."""
@@ -131,6 +140,8 @@ class AgentRealtimeVoice(RealtimeVoice):
                     type='function_call_output', call_id=call_id,
                     output=json.dumps(result, ensure_ascii=False))))
                 del self._tasks[call_id]
+                if result.get('silent'):
+                    return
                 self._followup_ready = True
             elif isinstance(command, tuple) and command[0] == 'abandon':
                 for call_id in command[1]:
@@ -184,6 +195,12 @@ class AgentRealtimeVoice(RealtimeVoice):
             if not question or len(question) > 16000:
                 raise ValueError('问题或任务需要 1—16000 字')
             self.status.emit('DeepSeek 正在回答 / 执行任务 · 阿里通话保持连接')
+            fast=match_fast_command(question)
+            if fast.get('matched'):
+                if self._claim_fast(fast.get('source_text')):
+                    self.fast_command.emit(fast)
+                self.resolve_task(call_id,dict(ok=True,answer='',silent=True))
+                return
             self.task_requested.emit(call_id, question)
         except (ValueError, TypeError, AttributeError) as exc:
             self.resolve_task(call_id, dict(ok=False, error=str(exc)))
@@ -191,6 +208,16 @@ class AgentRealtimeVoice(RealtimeVoice):
     def _handle_event(self, event):
         kind = event.get('type')
         response_id = event.get('response_id') or event.get('response', {}).get('id')
+        if kind == 'conversation.item.input_audio_transcription.completed':
+            text = event.get('transcript', '')
+            fast=match_fast_command(text) if text else dict(matched=False)
+            if fast.get('matched') and self._claim_fast(fast.get('source_text')):
+                self.fast_command.emit(fast)
+                self._cancel_audio()
+                if self._response_id:
+                    try:self._send(dict(type='response.cancel',response_id=self._response_id))
+                    except Exception:pass
+                self.status.emit('本地快速命令已处理')
         if kind in ('response.created','input_audio_buffer.speech_started'):
             self._preview_text = ''
             self._preview_channel = None

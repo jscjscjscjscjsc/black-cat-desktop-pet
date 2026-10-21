@@ -38,6 +38,7 @@ class AgentChatWindow(QDialog):
         self._task_summary='正在规划第一步，尚未修改目标文件'
         self._task_started=0
         self._task_feedback_sequence=0
+        self._dsh_last_notice=0
         self._task_heartbeat_timer=QTimer(self)
         self._task_heartbeat_timer.setInterval(1000)
         self._task_heartbeat_timer.timeout.connect(self._task_heartbeat)
@@ -437,6 +438,28 @@ class AgentChatWindow(QDialog):
             if self.active_id == ident:
                 self.render()
 
+    def _dsh_event(self,event):
+        ident=event.get('conversation_id')
+        if not ident:return
+        if event.get('type')=='dsh_event':
+            item=event.get('event') or {};phase=item.get('phase')
+            if item.get('type')=='status' and phase in ('turn_start','step_start'):
+                summary='DSH 正在执行'+(f"第 {item.get('step')} 步" if item.get('step') else '')
+                now=time.monotonic()
+                if now-self._dsh_last_notice>=10:
+                    self._dsh_last_notice=now
+                    self.status.setText(summary)
+                    if self.active_id==ident:self.pet._show_agent_bubble(summary,ident)
+                    if self.voice_active and self.voice:self.voice.notify_battleground(event.get('job_id','')+str(now),summary)
+            return
+        if event.get('type')=='dsh_completed':
+            ok=bool(event.get('ok'));text=event.get('text') or event.get('error') or 'DSH 任务未返回结果'
+            self.store.append(ident,'assistant' if ok else 'system',text)
+            if self.active_id==ident:
+                self.status.setText('DSH 任务已完成' if ok else 'DSH 任务未完成')
+                self.pet._show_agent_bubble(text,ident);self.render()
+            if self.voice_active and self.voice:self.voice.notify_battleground(event.get('job_id','')+'done',text[:800])
+
     def _completed(self, result):
         self.busy = False
         self._task_heartbeat_timer.stop()
@@ -476,6 +499,7 @@ class AgentChatWindow(QDialog):
 
     def stop_turn(self):
         self.runtime.battleground.stop()
+        self.runtime.dsh.stop()
         self.agent.cancel()
         self.pet._tts.stop()
         if self.voice_active:
@@ -515,6 +539,7 @@ class AgentChatWindow(QDialog):
             self.voice.transcript.connect(self._voice_transcript)
             self.voice.preview.connect(self._voice_preview)
             self.voice.gesture.connect(self.pet._queue_voice_gesture)
+            self.voice.fast_command.connect(self._fast_command)
             self.voice.status.connect(self.status.setText)
             self.voice.failed.connect(self._voice_error)
             self.voice.finished.connect(self._voice_finished)
@@ -538,6 +563,7 @@ class AgentChatWindow(QDialog):
             self.pet._pending_voice_gesture=None
             self.agent.cancel()
             self.runtime.battleground.stop()
+            self.runtime.dsh.stop()
             if self.voice:
                 self.voice.stop()
             self._voice_cancelled()
@@ -602,6 +628,20 @@ class AgentChatWindow(QDialog):
             from core.embodiment import spoken_reply
             self.pet._show_agent_bubble(spoken_reply(text)[2],self.active_id)
 
+    def _fast_command(self, command):
+        if not self.voice_active:return
+        if command.get('action')=='stop_call':
+            self.status.setText('已停止实时语音对话')
+            self.voice_button.setChecked(False)
+            return
+        from core.fast_commands import execute
+        result=execute(command)
+        if result.get('ok'):
+            self.status.setText(result.get('message','快速命令已完成'))
+            return
+        self.status.setText('快速命令未完成，转交智能体处理')
+        self.send(command.get('source_text',''),record_user=False)
+
     def _voice_transcript(self, who, text):
         if not self.voice_active or self.sender() is not self.voice:
             return
@@ -629,6 +669,7 @@ class AgentChatWindow(QDialog):
     def shutdown(self):
         self._task_heartbeat_timer.stop()
         self.runtime.battleground.stop()
+        self.runtime.dsh.stop()
         self.agent.cancel()
         self.voice_button.setChecked(False)
 

@@ -11,8 +11,19 @@ class AppRuntime:
         from core.bg_director import BattlegroundDirector
         self.battleground = BattlegroundDirector(panel)
         self.battleground.event.connect(panel._battleground_event)
+        from core.dsh_worker import DshManager
+        self.dsh = DshManager(panel)
+        self.dsh.event.connect(panel._dsh_event)
 
     def execute(self, name, args):
+        if name == 'dsh_task':
+            action=args.get('action')
+            if action=='status':return self.dsh.status()
+            if action=='stop':return self.dsh.stop()
+            if action=='start':
+                return self.dsh.start(args.get('task',''),self.panel.active_id,args.get('cwd'),
+                    args.get('seconds',900),args.get('session_id'))
+            raise ValueError('未知 DSH 操作')
         if name == 'battleground':
             action = args.get('action')
             if action == 'status':
@@ -60,9 +71,10 @@ class AppRuntime:
                         workspace=self.store.snapshot(),
                         authorized_apps=list(self.apps.entries()),
                         battleground=self.battleground.status(),
+                        dsh=self.dsh.status(),
                         local_access=self.apps.access.status(),
                         task=self.panel.agent.task_status(),
-                        capabilities=['pet_control', 'workspace', 'applications', 'self_ask', 'ecosystem','battleground','local_computer','computer','task_plan'],
+                        capabilities=['pet_control', 'workspace', 'applications', 'self_ask', 'ecosystem','battleground','dsh_task','local_computer','computer','task_plan'],
                         scope='本机能力由完整访问开关控制；继承咕嘎进程实际Windows权限')
         if name == 'pet_control':
             return self._pet(args)

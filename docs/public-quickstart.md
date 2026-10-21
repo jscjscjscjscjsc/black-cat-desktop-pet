@@ -20,6 +20,8 @@ python -m pip install -r requirements.txt
 
 双击 `首次配置.bat`。脚本只在 `ai_config.json` 不存在时复制模板并打开记事本，不会覆盖已有配置。
 
+首次启用实时语音前，再双击 `录入主人声音.bat`：程序会下载本地声纹模型，并录音三段各约 3 秒的声音。声纹仅保存在 `runtime/voice/`，录音不上传；只有通过本地验证的音频才会进入千问。复杂环境首次使用建议重新录一次并实际测试误拒率。
+
 ### 聊天与任务模型
 
 填写 OpenAI Chat Completions 兼容接口：
@@ -69,6 +71,8 @@ python -m pip install -r requirements.txt
 3. 点击 `语音对话`，允许麦克风。
 4. 直接说任务，例如“打开记事本，读取当前窗口，输入一段中文，再检查输入是否成功”。
 
+“打开某网页”“打开记事本”“搜索某内容”“停止对话”等低歧义命令会走本地快速路由，不进入 DeepSeek，也不生成 TTS 回复。复杂多步任务才会使用聊天模型或 DSH sidecar。
+
 ## 4. 安全与数据
 
 - `ai_config.json`、`runtime/chat/`、`runtime/agent-tasks/`、任务命令输出和战棋审计均被 Git 忽略。
@@ -85,3 +89,7 @@ python -m pip install -r requirements.txt
 **能对话但不能看屏幕**：当前聊天模型可能不支持图片输入，或未配置视觉模型。可先使用 `computer.accessibility` / `computer.uia` 走结构化控件路径。
 
 **管理员程序无法被普通权限咕嘎操作**：用同一管理员权限启动咕嘎；操作系统不会允许低权限进程向高权限窗口发送输入。
+
+**声纹总是拒绝主人**：重新运行 `录入主人声音.bat`，确保每次都在相近距离、安静环境录音；也可在语音配置关闭“仅主人声音有效”做诊断。阈值保存在 `runtime/voice/owner_profile.json`。
+
+**DSH 长任务提示 AUTH/401**：DSH 使用自己独立的模型凭据。先运行 `dsh --profile headless --json -` 或通过 DSH 配置/登录修复凭据；不要把私钥写进项目。咕嘎只负责启动 sidecar 并显示事件。
