@@ -10,7 +10,7 @@ import numpy as np
 
 ROOT=Path(__file__).resolve().parents[1];sys.path.insert(0,str(ROOT))
 from core.fast_commands import match,execute
-from core.speaker_gate import SpeakerGate,SAMPLE_RATE
+from core.speaker_gate import SpeakerGate,SAMPLE_RATE,threshold_from_pairs
 
 
 class FastCommandTests(unittest.TestCase):
@@ -32,6 +32,10 @@ class FastCommandTests(unittest.TestCase):
 
 
 class SpeakerGateTests(unittest.TestCase):
+    def test_owner_threshold_follows_model_scale(self):
+        self.assertGreaterEqual(threshold_from_pairs([.25,.30,.34]),.24)
+        self.assertLessEqual(threshold_from_pairs([.25,.30,.34]),.46)
+        self.assertEqual(threshold_from_pairs([]),.30)
     def test_owner_audio_unlocks_and_foreign_audio_is_gated(self):
         owner=np.sin(np.arange(SAMPLE_RATE*2)*.06).astype(np.float32)*.08
         raw=(np.clip(owner,-1,1)*32767).astype(np.int16).tobytes()

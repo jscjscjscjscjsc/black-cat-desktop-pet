@@ -50,6 +50,14 @@ def cosine(a,b):
     return float(np.dot(a,b)/denom) if denom else 0.0
 
 
+def threshold_from_pairs(pairs,default=.30):
+    """3D-Speaker cosine scores are commonly around .2-.5, not .7+."""
+    values=sorted(float(x) for x in pairs if np.isfinite(x))
+    if not values:return default
+    middle=values[len(values)//2]
+    return max(.24,min(.46,middle-.05))
+
+
 class LocalSpeakerGate:
     def __init__(self, profile_path=PROFILE_PATH, model_path=MODEL_PATH, threshold=None):
         self.profile_path=Path(profile_path);self.model_path=Path(model_path)
@@ -59,7 +67,7 @@ class LocalSpeakerGate:
         metadata={}
         try:metadata=json.loads(META_PATH.read_text(encoding='utf-8'))
         except (OSError,ValueError):pass
-        self.threshold=float(threshold if threshold is not None else metadata.get('threshold',0.72))
+        self.threshold=float(threshold if threshold is not None else metadata.get('threshold',0.30))
         if str(self.model_path)!=str(MODEL_PATH):_get_extractor(self.model_path)
         else:_get_extractor()
         self.lock=threading.Lock()
@@ -113,11 +121,11 @@ def enroll(samples):
     _get_extractor()
     vectors=[_embedding(x) for x in samples]
     pairs=[cosine(vectors[i],vectors[j]) for i in range(len(vectors)) for j in range(i+1,len(vectors))]
-    if pairs and min(pairs)<.55:raise ValueError('几段声音差异过大，请在同一种环境和距离重新录入')
+    if pairs and min(pairs)<.20:raise ValueError('几段声音差异过大，请在同一种环境和距离重新录入')
     owner=np.mean(np.stack(vectors),axis=0);owner/=max(1e-8,float(np.linalg.norm(owner)))
     PROFILE_PATH.parent.mkdir(parents=True,exist_ok=True)
     np.save(PROFILE_PATH,owner)
-    threshold=max(.68,min(.82,float(min(pairs)-.08) if pairs else .72))
+    threshold=threshold_from_pairs(pairs)
     META_PATH.write_text(json.dumps(dict(created=time.time(),threshold=threshold,pair_scores=pairs,
         model=MODEL_PATH.name,sample_rate=SAMPLE_RATE),ensure_ascii=False,indent=2),encoding='utf-8')
     return dict(profile=str(PROFILE_PATH),threshold=threshold,pair_scores=pairs)

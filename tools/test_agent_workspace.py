@@ -116,6 +116,34 @@ class WorkspaceTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     apps.open('测试软件')
 
+    def test_owner_voice_script_uses_persistent_verified_console(self):
+        from core.authorized_apps import AuthorizedApps
+        with tempfile.TemporaryDirectory() as folder:
+            apps=AuthorizedApps(Path(folder)/'apps.json')
+            class Proc:
+                pid=321
+                def poll(self):return None
+            with patch('core.authorized_apps.subprocess.Popen',return_value=Proc()) as launch, \
+                 patch('core.authorized_apps.time.sleep'):
+                result=apps.open('录入主人声音的脚本')
+            self.assertTrue(result['verified_running'])
+            self.assertEqual(result['pid'],321)
+            args=launch.call_args.args[0]
+            self.assertEqual(args[0],'cmd.exe');self.assertIn('/k',args);self.assertIn('call',args)
+            self.assertTrue(args[-1].endswith('录入主人声音.bat'))
+
+    def test_script_that_exits_immediately_is_reported_as_failure(self):
+        from core.authorized_apps import AuthorizedApps
+        with tempfile.TemporaryDirectory() as folder:
+            apps=AuthorizedApps(Path(folder)/'apps.json')
+            class Proc:
+                pid=322
+                def poll(self):return 7
+            with patch('core.authorized_apps.subprocess.Popen',return_value=Proc()), \
+                 patch('core.authorized_apps.time.sleep'):
+                with self.assertRaisesRegex(RuntimeError,'退出码 7'):
+                    apps.open('录入主人声音')
+
     def test_continuous_voice_releases_microphone_between_turns(self):
         import types
         import numpy as np

@@ -1,10 +1,18 @@
 """Explicit app grants, or discovered local apps when the user enables full access."""
 import json
 import os
+import subprocess
+import time
 from itertools import islice
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+SCRIPT_ALIASES = {
+    '录入主人声音': ROOT/'录入主人声音.bat',
+    '录入主人声音脚本': ROOT/'录入主人声音.bat',
+    '录入主人声音的脚本': ROOT/'录入主人声音.bat',
+    '首次配置': ROOT/'首次配置.bat',
+}
 
 
 class AuthorizedApps:
@@ -15,6 +23,8 @@ class AuthorizedApps:
 
     def available(self, query=''):
         entries=dict(self.entries())
+        for name,path in SCRIPT_ALIASES.items():
+            if path.is_file():entries.setdefault(name,str(path))
         if self.access.enabled:
             roots=[Path(os.environ.get('APPDATA',''))/'Microsoft/Windows/Start Menu/Programs',
                    Path(os.environ.get('PROGRAMDATA','C:/ProgramData'))/'Microsoft/Windows/Start Menu/Programs',
@@ -72,12 +82,31 @@ class AuthorizedApps:
         entries = self.available()
         if name not in entries:
             target=Path(name).expanduser()
-            if not self.access.enabled or not target.is_absolute() or target.suffix.lower() not in ('.exe','.lnk'):
-                raise ValueError('请先列出软件取得精确名称；完整访问模式也可传本机exe/lnk绝对路径')
+            # Accept the user's natural aliases for the owner enrollment script.
+            normalized=str(name).replace(' ','').removesuffix('.bat')
+            alias=next((value for key,value in SCRIPT_ALIASES.items() if normalized in (key,key+'脚本',key+'的脚本')),None)
+            if alias and alias.is_file():target=alias
+            elif not self.access.enabled or not target.is_absolute() or target.suffix.lower() not in ('.exe','.lnk','.bat','.cmd','.ps1'):
+                raise ValueError('请先列出软件取得精确名称；完整访问模式也可传本机 exe/lnk/bat/cmd/ps1 绝对路径')
         else:
             target = Path(entries[name])
         if not target.is_file():
             raise ValueError('已授权的软件路径已失效，请重新选择')
-        os.startfile(str(target))
-        return dict(name=name, launch_requested=True,
-                    message='Windows 已接受启动请求；这不代表已经取得软件内部操作权限')
+        suffix=target.suffix.lower()
+        flags=subprocess.CREATE_NEW_CONSOLE if os.name=='nt' else 0
+        if suffix in ('.bat','.cmd'):
+            proc=subprocess.Popen(['cmd.exe','/k','call',str(target)],cwd=str(target.parent),creationflags=flags)
+        elif suffix=='.ps1':
+            proc=subprocess.Popen(['powershell.exe','-NoExit','-NoProfile','-ExecutionPolicy','Bypass','-File',str(target)],
+                cwd=str(target.parent),creationflags=flags)
+        else:
+            os.startfile(str(target));proc=None
+        if proc is not None:
+            time.sleep(1.2)
+            code=proc.poll()
+            if code is not None:
+                raise RuntimeError(f'脚本启动后立即退出，退出码 {code}；请检查脚本或依赖安装')
+            return dict(name=name,path=str(target),launch_requested=True,verified_running=True,pid=proc.pid,
+                        message='脚本控制台已启动并在运行')
+        return dict(name=name,path=str(target),launch_requested=True,verified_running=False,
+                    message='Windows 已接受软件启动请求；仍需观察窗口确认')
