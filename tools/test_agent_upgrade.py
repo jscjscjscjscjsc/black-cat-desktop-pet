@@ -79,9 +79,24 @@ class UpgradeTests(unittest.TestCase):
             def run(self,*args,**kwargs):
                 return dict(exit_code=0,stdout='{"name":"保存","id":"Save","type":"ControlType.Button","enabled":true,"left":1,"top":2,"right":40,"bottom":20,"performed":true,"method":"InvokePattern"}')
         control=ComputerControl(Access())
+        from core.uia_backend import UIAUnavailable
+        control._uia=lambda: (_ for _ in ()).throw(UIAUnavailable('进程内 UIAutomation 不可用: test'))
         with patch('win32gui.IsWindow',return_value=True),patch('win32gui.GetForegroundWindow',return_value=9):
             result=control.execute(dict(action='uia',hwnd=9,uia_name='保存',uia_operation='invoke'))
         self.assertTrue(result['input_sent']);self.assertTrue(result['needs_observe'])
+        self.assertEqual(result['method'],'InvokePattern')
+
+    def test_in_process_uia_ref_avoids_powershell_and_respects_foreground(self):
+        from types import SimpleNamespace
+        class Backend:
+            def act(self,hwnd,operation,**kwargs):
+                self.seen=(hwnd,operation,kwargs)
+                return dict(input_sent=True,needs_observe=True,method='InvokePattern',control=dict(ref=kwargs['ref']))
+        backend=Backend();control=ComputerControl(SimpleNamespace(enabled=True));control._uia_backend=backend
+        with patch('win32gui.IsWindow',return_value=True),patch('win32gui.GetForegroundWindow',return_value=9):
+            result=control.execute(dict(action='uia',hwnd=9,uia_ref='r1',uia_operation='invoke'))
+        self.assertEqual(backend.seen[0:2],(9,'invoke'))
+        self.assertEqual(backend.seen[2]['ref'],'r1')
         self.assertEqual(result['method'],'InvokePattern')
 
     def test_more_than_old_six_rounds_and_steering(self):

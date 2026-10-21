@@ -31,6 +31,13 @@ class ComputerControl:
         from core.desktop_access import DesktopAccess
         self.access=access or DesktopAccess()
         self.observation=None
+        self._uia_backend=None
+
+    def _uia(self):
+        if self._uia_backend is None:
+            from core.uia_backend import UIABackend
+            self._uia_backend=UIABackend()
+        return self._uia_backend
 
     def execute(self,args,cancel=None):
         # Match screenshot and input coordinates on mixed-DPI monitors without
@@ -105,6 +112,8 @@ class ComputerControl:
         if action=='accessibility':
             hwnd=int(args.get('hwnd') or win32gui.GetForegroundWindow())
             if not win32gui.IsWindow(hwnd):raise ValueError('窗口已关闭')
+            try:return self._uia().snapshot(hwnd,args.get('limit',240))
+            except Exception:pass
             script='''Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
 $rootElement=[System.Windows.Automation.AutomationElement]::FromHandle([IntPtr]HWND_VALUE)
@@ -133,11 +142,26 @@ ConvertTo-Json -InputObject @($items) -Compress -Depth 3'''.replace('HWND_VALUE'
             name=str(args.get('uia_name',''))[:200]
             automation_id=str(args.get('uia_id',''))[:200]
             control_type=str(args.get('uia_type',''))[:80]
-            operation=str(args.get('uia_operation',''))
-            if not any((name,automation_id,control_type)) or operation not in ('invoke','set_value','focus','click'):
-                raise ValueError('uia 需要 Name、AutomationId 或 ControlType 之一，以及合法操作')
-            def pstr(value):return "'"+value.replace("'","''")+"'"
             value=str(args.get('uia_value',''))
+            operation=str(args.get('uia_operation',''))
+            if not any((name,automation_id,control_type,args.get('uia_ref'))) or operation not in ('invoke','set_value','focus','click'):
+                raise ValueError('uia 需要 ref/Name/AutomationId/ControlType 之一，以及合法操作')
+            try:
+                result=self._uia().act(hwnd,operation,ref=args.get('uia_ref'),name=name,
+                    automation_id=automation_id,control_type=control_type,value=value)
+                if result.pop('fallback',False):
+                    rect=result.pop('rect',None)
+                    if not rect:raise RuntimeError('UIA控件没有可点击区域')
+                    user.SetCursorPos(int((rect['left']+rect['right'])/2),int((rect['top']+rect['bottom'])/2))
+                    user.mouse_event(2,0,0,0,0);user.mouse_event(4,0,0,0,0)
+                    result['method']='MouseFallback'
+                else:result.pop('rect',None)
+                self.observation=None
+                return result
+            except ValueError:raise
+            except Exception as backend_error:
+                if '进程内 UIAutomation 不可用' not in str(backend_error):raise
+            def pstr(value):return "'"+value.replace("'","''")+"'"
             if len(value)>4000:raise ValueError('uia_value 最多4000字')
             script='''Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
@@ -179,6 +203,17 @@ $r=$c.BoundingRectangle
             return dict(input_sent=True,action='uia',needs_observe=True,method=method,
                 control=dict(name=result.get('name'),id=result.get('id'),type=result.get('type')),
                 message='UIA操作已执行；仍需 accessibility 或 observe 验证结果')
+        if action=='uia_wait':
+            hwnd=int(args.get('hwnd') or win32gui.GetForegroundWindow())
+            if not win32gui.IsWindow(hwnd):raise ValueError('窗口已关闭')
+            name=str(args.get('uia_name',''))[:200];automation_id=str(args.get('uia_id',''))[:200]
+            control_type=str(args.get('uia_type',''))[:80];ref=args.get('uia_ref')
+            if not any((name,automation_id,control_type,ref)):raise ValueError('uia_wait 需要控件条件')
+            state=str(args.get('uia_state') or args.get('uia_wait') or 'exists')
+            if state not in ('exists','enabled','offscreen'):raise ValueError('未知等待状态')
+            return self._uia().wait(hwnd,args.get('uia_timeout_ms',5000)/1000,ref=ref,name=name,
+                automation_id=automation_id,control_type=control_type,state=state,
+                expected=args.get('uia_expected',True))
         observed=self.observation
         if not observed or args.get('observation_id')!=observed['id'] or time.monotonic()-observed['time']>30:
             raise ValueError('观察已过期；先 observe 再输入')

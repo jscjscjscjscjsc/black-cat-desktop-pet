@@ -5,6 +5,8 @@
 
 **下载后快速开始：** 双击 `首次配置.bat` 填写聊天 API 与实时语音 API，再双击 `启动企鹅.bat`。完整环境、两条模型链路、免费额度保护和权限说明见 [公开版快速开始](docs/public-quickstart.md)。桌面控制优先使用 UIA 结构化控件，内存读取只用于明确支持的只读集成，见 [快速桌面控制与内存边界](docs/fast-desktop-control.md)。
 
+长语音的时长、上下文、打断、断线、额度与任务执行边界见 [实时语音能力边界](docs/realtime-voice-boundaries.md)；Computer Use 各路线和 UIA、DOM、内存在自动化中的作用见 [Computer Use 路线与边界](docs/computer-use-landscape.md)。
+
 ## 功能概览
 
 新增：[咕嘎智能体与个人软件生态](docs/agent-ecosystem.md)。右键“对话”打开项目/会话悬浮窗；“长语音 · 边聊边执行”使用现有 DeepSeek 模型调用自身工具、打开用户授权的软件，并通过双向 stdio MCP 接入个人软件生态。
