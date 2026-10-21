@@ -579,11 +579,19 @@ class PetWindow(QWidget):
 
     def _open_agent_voice(self):
         panel = self._ensure_agent_panel()
+        # The long-voice entry is an ambient action: never reveal the full
+        # conversation window just because setup or voiceprint validation failed.
+        panel.hide()
         panel.voice_button.setChecked(True)
+        QTimer.singleShot(120, lambda: self._finish_agent_voice_launch(panel))
+
+    def _finish_agent_voice_launch(self, panel):
         if panel.voice_active:
             panel.hide_to_pet()
-        else:
-            self._open_agent_chat()
+            return
+        panel.hide()
+        message = panel.status.text() or '长语音未启动，请检查语音配置'
+        self._show_agent_bubble(message, panel.active_id)
 
     def _end_agent_voice(self):
         if self._agent_panel:
